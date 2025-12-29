@@ -11,14 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     curl \
     ca-certificates \
-    bash \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv to system location (use bash for installer)
-RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
-    bash /tmp/uv-install.sh --install-dir /usr/local/bin && \
-    chmod +x /usr/local/bin/uv && \
-    rm /tmp/uv-install.sh
+# Install uv using pip (most reliable method in Python images)
+RUN pip install --no-cache-dir uv
 
 # Copy dependency files
 COPY pyproject.toml uv.lock* ./
