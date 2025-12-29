@@ -16,11 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv using pip (most reliable method in Python images)
 RUN pip install --no-cache-dir uv
 
-# Copy dependency files
-COPY pyproject.toml uv.lock* ./
+# Copy dependency files and source for editable install
+COPY pyproject.toml ./
+COPY app ./app
 
-# Install dependencies using uv (installs to system Python, uses lock file for reproducibility)
-RUN uv pip install --system --locked --no-cache -e .
+# Install dependencies using uv (installs to system Python)
+RUN uv pip install --system --no-cache -e .
 
 # Production stage
 FROM python:3.11-slim
