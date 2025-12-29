@@ -149,7 +149,7 @@ async def provision(
                         detail=f"Plugin {request.plugin_id} is locked. Please request access from an administrator or business unit owner for this business unit."
                     )
         
-        # OIDC-only: No static credentials, always use OIDC token exchange
+        # Credentials are managed automatically via Pulumi ESC
         credential_name = None
         # Get cloud provider from plugin manifest
         cloud_provider = plugin_version.manifest.get("cloud_provider", "unknown")
@@ -171,21 +171,21 @@ async def provision(
         )
         db.add(job)
         
-        # Add initial log with OIDC auto-exchange info
+        # Add initial log with ESC info
         credential_msg = ""
         if cloud_provider and cloud_provider != "unknown":
-            # Check if OIDC is configured for this provider
+            # Check if ESC is configured for this provider
             from app.config import settings
-            oidc_configured = False
-            if cloud_provider.lower() == "aws" and settings.AWS_ROLE_ARN:
-                oidc_configured = True
-            elif cloud_provider.lower() == "gcp" and settings.GCP_SERVICE_ACCOUNT_EMAIL:
-                oidc_configured = True
-            elif cloud_provider.lower() == "azure" and settings.AZURE_CLIENT_ID:
-                oidc_configured = True
+            esc_configured = False
+            if cloud_provider.lower() == "aws" and settings.PULUMI_ESC_ENVIRONMENT_AWS:
+                esc_configured = True
+            elif cloud_provider.lower() == "gcp" and settings.PULUMI_ESC_ENVIRONMENT_GCP:
+                esc_configured = True
+            elif cloud_provider.lower() == "azure" and settings.PULUMI_ESC_ENVIRONMENT_AZURE:
+                esc_configured = True
             
-            if oidc_configured:
-                credential_msg = " (will auto-exchange OIDC token for credentials)"
+            if esc_configured:
+                credential_msg = " (using Pulumi ESC for automatic credential management)"
             else:
                 credential_msg = " (no credentials - deployment may fail)"
         else:

@@ -42,7 +42,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data: https:; "
                 "font-src 'self' data:; "
-                "connect-src 'self' " + (settings.OIDC_ISSUER if settings.OIDC_ISSUER else "") + "; "
+                "connect-src 'self'; "
                 "frame-ancestors 'none';"
             )
         else:
@@ -54,7 +54,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "style-src 'self' 'unsafe-inline'; "  # Keep unsafe-inline for Tailwind
                 "img-src 'self' data: https:; "
                 "font-src 'self' data:; "
-                "connect-src 'self' " + (settings.OIDC_ISSUER if settings.OIDC_ISSUER else "") + "; "
+                "connect-src 'self'; "
                 "frame-ancestors 'none';"
             )
         response.headers["Content-Security-Policy"] = csp

@@ -35,7 +35,7 @@ A production-ready, enterprise-grade Internal Developer Platform for streamlined
 - **Multi-Tenant Support**: Organization-based isolation with Casbin RBAC
 - **Plugin System**: Extensible architecture with custom infrastructure templates
 - **CI/CD Integration**: Native GitHub Actions integration with webhook support
-- **OIDC Authentication**: Workload identity federation for secure cloud access
+- **Pulumi ESC Integration**: Automatic cloud credential management via Pulumi Environments, Secrets, and Configuration
 - **Audit Logging**: Complete activity tracking and compliance monitoring
 
 ---
@@ -95,7 +95,7 @@ FastAPI (Python 3.11+)
 ├── Task Queue: Celery + Redis
 ├── IaC Engine: Pulumi
 ├── Git Operations: GitPython
-├── Cloud SDKs: boto3 (AWS), Google Cloud, Azure SDK
+├── Cloud Credentials: Pulumi ESC (automatic OIDC-based credential management)
 ├── Encryption: Cryptography (Fernet)
 └── Authentication: JWT (Access + Refresh tokens)
 ```
@@ -136,7 +136,7 @@ React 18 + TypeScript
 └──────────────┘    └──────────────┘    └──────────────┘
          ↓                                        ↓
 ┌──────────────────────────────────────────────────────────────┐
-│              Cloud Providers (via OIDC)                       │
+│         Cloud Providers (via Pulumi ESC)                      │
 │         AWS          │        GCP       │       Azure        │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -191,7 +191,7 @@ React 18 + TypeScript
 - **Async Processing**: Background job processing with Celery
 - **Job Management**: Complete history, logs, and status tracking
 - **Retry Logic**: Automatic retries with dead-letter queue for failed jobs
-- **OIDC Credentials**: Workload Identity Federation for secure cloud access
+- **Pulumi ESC**: Automatic cloud credential management for AWS, GCP, and Azure via OIDC
 - **Multi-Cloud Deployment**: Deploy to AWS, GCP, Azure from single interface
 - **Deployment Tracking**: Real-time status updates and output capture
 - **Environment Separation**: Deploy to development, staging, or production with strict access control
@@ -221,7 +221,7 @@ React 18 + TypeScript
 - **JWT Authentication**: Access tokens (15min) + Refresh tokens (7 days)
 - **HTTP-Only Cookies**: Secure refresh token storage
 - **Password Hashing**: Bcrypt with secure password policies
-- **OIDC Provider**: Built-in OpenID Connect server for cloud workload identity
+- **Pulumi ESC**: Centralized credential management with automatic OIDC token exchange
 - **Encrypted Credentials**: Fernet encryption for sensitive data
 - **CORS Configuration**: Secure cross-origin resource sharing
 - **Rate Limiting Ready**: Infrastructure for rate limiting
@@ -452,18 +452,16 @@ React 18 + TypeScript
 | GET | `/{credential_id}` | Get credential details | Admin only |
 | DELETE | `/{credential_id}` | Delete credential | Admin only |
 
-### OIDC Endpoints
+### Cloud Credential Management
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| GET | `/.well-known/openid-configuration` | OIDC discovery endpoint | No |
-| GET | `/.well-known/jwks.json` | JSON Web Key Set | No |
-| POST | `/oidc/token` | Issue OIDC token (testing) | No |
+The platform uses **Pulumi ESC (Environments, Secrets, and Configuration)** for automatic cloud credential management. Credentials are automatically provided to Pulumi programs via ESC environments configured in Pulumi Cloud.
 
-**Cloud-Specific OIDC:**
-- `/api/oidc/aws/token` - AWS STS token exchange
-- `/api/oidc/azure/token` - Azure token exchange
-- `/api/oidc/gcp/token` - GCP access token exchange
+**Supported Cloud Providers:**
+- AWS - Via IAM role assumption with OIDC
+- GCP - Via Workload Identity Federation with OIDC
+- Azure - Via Federated Credentials with OIDC
+
+For detailed setup instructions, see the [Backend README](backend/README.md#pulumi-esc-configuration).
 
 ### Webhooks (`/api/webhooks`)
 
@@ -915,32 +913,23 @@ WEBHOOK_BASE_URL=https://your-domain.com
 MICROSERVICE_REPO_ORG=your-github-org
 ```
 
-#### OIDC Configuration
+#### Pulumi ESC Configuration
+
+The platform uses Pulumi ESC for automatic cloud credential management. Configure ESC environments in Pulumi Cloud and reference them in your application:
+
 ```bash
-OIDC_ISSUER=https://your-platform.com
+# Pulumi Cloud Configuration
+PULUMI_ACCESS_TOKEN=your-pulumi-access-token
+PULUMI_ORG=your-org-name
+
+# Pulumi ESC Environments (format: "org/environment-name")
+PULUMI_ESC_ENVIRONMENT_GCP=your-org/gcp-production
+PULUMI_ESC_ENVIRONMENT_AWS=your-org/aws-production
+PULUMI_ESC_ENVIRONMENT_AZURE=your-org/azure-production
+PULUMI_USE_ESC=true
 ```
 
-#### AWS OIDC
-```bash
-AWS_ROLE_ARN=arn:aws:iam::123456789012:role/FoundryPlatformRole
-AWS_REGION=us-east-1
-```
-
-#### GCP OIDC
-```bash
-GCP_WORKLOAD_IDENTITY_POOL_ID=Foundry-pool
-GCP_WORKLOAD_IDENTITY_PROVIDER_ID=Foundry-provider
-GCP_SERVICE_ACCOUNT_EMAIL=Foundry@project.iam.gserviceaccount.com
-GCP_PROJECT_ID=your-project-id
-GCP_PROJECT_NUMBER=123456789012
-```
-
-#### Azure OIDC
-```bash
-AZURE_TENANT_ID=your-tenant-id
-AZURE_CLIENT_ID=your-client-id
-AZURE_CLIENT_SECRET=your-client-secret
-```
+**Note:** Detailed setup instructions for ESC environments are in the [Backend README](backend/README.md#pulumi-esc-configuration).
 
 #### Plugin Storage
 ```bash
@@ -1037,7 +1026,7 @@ g, user789, bu-123, org123  # User is member of BU bu-123 with developer role
 7. **Enable rate limiting in production**
 8. **Monitor audit logs regularly**
 9. **Set up database backups**
-10. **Use OIDC for cloud credentials** (avoid static keys)
+10. **Use Pulumi ESC for cloud credentials** (automatic OIDC-based credential management)
 
 ---
 
@@ -1183,8 +1172,9 @@ alembic upgrade head
 - [ ] Enable rate limiting
 - [ ] Configure firewall rules
 - [ ] Set up SSL certificates
-- [ ] Configure OIDC issuer URL
-- [ ] Set up cloud workload identity federation
+- [ ] Configure Pulumi Cloud access token
+- [ ] Set up Pulumi ESC environments (see Backend README)
+- [ ] Configure cloud provider OIDC trust relationships (see Backend README)
 - [ ] Configure GitHub webhooks
 - [ ] Set up Celery with proper concurrency
 - [ ] Enable audit log retention policy
@@ -1376,7 +1366,7 @@ See `k8s/` directory for Kubernetes manifests (to be created).
 - ✅ Automatic cleanup of stuck deployments via Celery periodic tasks
 - ✅ Fixed duplicate role display in user profile
 - ✅ Fixed foreign key cascade issues for notifications
-- ✅ Improved GCP OIDC error handling and diagnostics
+- ✅ Integrated Pulumi ESC for automatic cloud credential management
 - ✅ Fixed permission checking for environment-based deployments
 
 ---

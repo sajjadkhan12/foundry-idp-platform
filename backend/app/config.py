@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import field_validator, ConfigDict
 from typing import List
 from pathlib import Path
 
@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = "" 
     PULUMI_CONFIG_PASSPHRASE: str = "default-passphrase"  # SECURITY: Change this in production!
     PULUMI_ACCESS_TOKEN: str = ""  # Pulumi Cloud access token (optional, for cloud backend)
+    PULUMI_ORG: str = ""  # Pulumi organization name (required when using Pulumi Cloud)
+    # Pulumi ESC (Environments, Secrets, and Configuration) Configuration
+    # ESC environments automatically handle OIDC token exchange for cloud credentials
+    PULUMI_ESC_ENVIRONMENT_GCP: str = ""  # ESC environment for GCP (e.g., "Sajjadkhan12/gcp-production")
+    PULUMI_ESC_ENVIRONMENT_AWS: str = ""  # ESC environment for AWS (e.g., "Sajjadkhan12/aws-production")
+    PULUMI_ESC_ENVIRONMENT_AZURE: str = ""  # ESC environment for Azure (e.g., "Sajjadkhan12/azure-production")
+    PULUMI_USE_ESC: bool = True  # Use ESC for credential management (required)
     
     # GitOps Configuration
     GITHUB_REPOSITORY: str = ""  # Base GitHub repository URL (can be overridden per plugin)
@@ -56,37 +63,18 @@ class Settings(BaseSettings):
         if not self.BACKEND_CORS_ORIGINS and self.CORS_ORIGINS:
             self.BACKEND_CORS_ORIGINS = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
     
-    # OIDC Provider Configuration
-    OIDC_ISSUER: str = ""  # Set in .env, e.g., https://Foundry.nexgendevworks.com
+    # AWS Configuration (for cost services and other operations)
+    AWS_REGION: str = "us-east-1"  # AWS region for operations
     
-    @field_validator("OIDC_ISSUER")
-    def validate_oidc_issuer(cls, v: str) -> str:
-        if not v or not v.strip():
-            # In development we might want to allow empty but user requested configurable issuer
-            # raising error enforces it's set
-            pass 
-        return v.rstrip('/')
-
-    # AWS Configuration
-    AWS_ROLE_ARN: str = "" # The role the IDP assumes for testing
-    AWS_REGION: str = "us-east-1"
-    
-    # GCP Configuration
-    GCP_WORKLOAD_IDENTITY_POOL_ID: str = ""
-    GCP_WORKLOAD_IDENTITY_PROVIDER_ID: str = ""
-    GCP_SERVICE_ACCOUNT_EMAIL: str = ""
+    # GCP Configuration (for cost services and other operations)
     GCP_PROJECT_ID: str = ""  # Project ID for API calls
-    GCP_PROJECT_NUMBER: str = ""  # Project Number for Workload Identity audience (required)
     GCP_BILLING_ACCOUNT_ID: str = ""  # Optional billing account ID for cost queries
     
-    # Azure Configuration
-    AZURE_TENANT_ID: str = ""
-    AZURE_CLIENT_ID: str = ""
-    AZURE_CLIENT_SECRET: str = "" # Optional if using certificate but useful for testing
-    
-    class Config:
+    model_config = ConfigDict(
         # Look for .env file in the backend directory (parent of app/)
-        env_file = str(Path(__file__).parent.parent / ".env")
-        case_sensitive = True
+        env_file=str(Path(__file__).parent.parent / ".env"),
+        case_sensitive=True,
+        extra="ignore"  # Ignore extra environment variables
+    )
 
 settings = Settings()

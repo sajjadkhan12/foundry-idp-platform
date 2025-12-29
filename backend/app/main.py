@@ -24,10 +24,6 @@ from app.api import (
     plugins, 
     provision, 
     webhooks, 
-    oidc, 
-    aws_oidc, 
-    azure_oidc, 
-    gcp_oidc,
     credentials
 )
 
@@ -282,12 +278,6 @@ app.include_router(credentials.router, prefix=settings.API_V1_STR)
 
 # Include API routers (non-versioned, for webhooks from external services)
 app.include_router(webhooks.router, prefix="/api")
-
-# Include OIDC routers
-app.include_router(oidc.router, prefix="/.well-known")
-app.include_router(aws_oidc.router, prefix="/api/oidc/aws")
-app.include_router(azure_oidc.router, prefix="/api/oidc/azure")
-app.include_router(gcp_oidc.router, prefix="/api/oidc/gcp")
 
 # Global exception handler
 @app.exception_handler(Exception)

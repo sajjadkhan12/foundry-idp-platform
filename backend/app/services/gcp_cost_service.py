@@ -11,7 +11,6 @@ from typing import Dict, List, Optional, Any
 from fastapi import HTTPException
 
 from app.config import settings
-from app.services.cloud_integrations import CloudIntegrationService
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +25,16 @@ class GCPCostService:
     @staticmethod
     async def _get_access_token(user_id: str) -> str:
         """Get GCP access token for API calls"""
-        try:
-            credentials = await CloudIntegrationService.get_gcp_access_token(user_id)
-            return credentials.get("access_token")
-        except Exception as e:
-            logger.error(f"Failed to get GCP access token: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to authenticate with GCP: {str(e)}"
-            )
+        # NOTE: This service needs to be updated to use alternative authentication
+        # CloudIntegrationService has been removed. Options:
+        # 1. Use service account keys stored securely
+        # 2. Use Pulumi ESC to get credentials
+        # 3. Use GCP Workload Identity with service account impersonation
+        raise HTTPException(
+            status_code=501,
+            detail="GCP cost service authentication is not implemented. CloudIntegrationService has been removed. "
+                   "Please update this service to use alternative authentication (service account keys, Pulumi ESC, or Workload Identity)."
+        )
 
     @staticmethod
     async def estimate_vm_cost(
