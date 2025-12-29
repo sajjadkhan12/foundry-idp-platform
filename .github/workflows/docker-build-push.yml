@@ -77,13 +77,37 @@ jobs:
           # Extract the primary tag (prefer semver, then branch-sha, then latest)
           # The metadata action outputs tags separated by newlines
           TAGS="${{ steps.meta.outputs.tags }}"
-          # Try to find semver tag first (v1.0.0 format), then branch-sha, then latest
-          PRIMARY_TAG=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || \
-                       echo "$TAGS" | grep -E '^[a-z]+-[a-f0-9]+$' | head -n1 || \
-                       echo "$TAGS" | grep 'latest' | head -n1 || \
-                       echo "$TAGS" | head -n1)
-          # Clean up any whitespace
-          PRIMARY_TAG=$(echo "$PRIMARY_TAG" | xargs)
+          echo "All tags:"
+          echo "$TAGS"
+          
+          # Try to find semver tag first (v1.0.0 format)
+          PRIMARY_TAG=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          
+          # If no semver, try branch-sha format (e.g., main-abc1234)
+          if [ -z "$PRIMARY_TAG" ]; then
+            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^[a-zA-Z0-9_-]+-[a-f0-9]{7,}$' | head -n1)
+          fi
+          
+          # If still no tag, try latest
+          if [ -z "$PRIMARY_TAG" ]; then
+            PRIMARY_TAG=$(echo "$TAGS" | grep 'latest' | head -n1)
+          fi
+          
+          # If still no tag, get the first non-empty line
+          if [ -z "$PRIMARY_TAG" ]; then
+            PRIMARY_TAG=$(echo "$TAGS" | grep -v '^$' | head -n1)
+          fi
+          
+          # Clean up any whitespace and ensure it's valid
+          PRIMARY_TAG=$(echo "$PRIMARY_TAG" | xargs | tr -d '\n\r')
+          
+          # Validate tag doesn't start with hyphen or contain invalid chars
+          if [[ "$PRIMARY_TAG" =~ ^- ]] || [ -z "$PRIMARY_TAG" ]; then
+            echo "Error: Invalid tag extracted: '$PRIMARY_TAG'"
+            echo "Falling back to 'latest'"
+            PRIMARY_TAG="latest"
+          fi
+          
           FULL_IMAGE="${{ env.REGISTRY }}/${{ matrix.component == 'backend' && env.BACKEND_IMAGE_NAME || env.FRONTEND_IMAGE_NAME }}:$PRIMARY_TAG"
           echo "tag=$PRIMARY_TAG" >> $GITHUB_OUTPUT
           echo "full_image=$FULL_IMAGE" >> $GITHUB_OUTPUT
