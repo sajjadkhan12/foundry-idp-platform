@@ -188,13 +188,14 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: update image tags to ${{ steps.extract-tags.outputs.backend_tag }}
+            COMMIT_MSG="chore: update image tags to ${{ steps.extract-tags.outputs.backend_tag }}
 
 - backend: ${{ steps.extract-tags.outputs.backend_image }}
 - frontend: ${{ steps.extract-tags.outputs.frontend_image }}
 - worker: ${{ steps.extract-tags.outputs.backend_image }}
 
 [skip ci]"
+            git commit -m "$COMMIT_MSG"
             git push
             echo "Manifests updated and pushed successfully"
           fi
