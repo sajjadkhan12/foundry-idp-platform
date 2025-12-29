@@ -30,17 +30,21 @@ class BusinessUnitMember(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     business_unit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("business_units.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False, index=True)
+    role_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("roles.id", ondelete="RESTRICT"), nullable=True, index=True)  # NULLABLE: allows members without roles
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     # Relationships
     business_unit: Mapped["BusinessUnit"] = relationship("BusinessUnit", back_populates="members")
     user: Mapped["User"] = relationship("User", back_populates="business_unit_memberships")
-    role: Mapped["Role"] = relationship("Role")
+    role: Mapped[Optional["Role"]] = relationship("Role")  # Optional relationship since role_id can be NULL
     
     __table_args__ = (
-        UniqueConstraint('business_unit_id', 'user_id', name='uix_business_unit_member'),
+        # Allow one entry with NULL role_id per user per BU, and multiple entries with specific roles
+        # Using partial unique indexes to handle NULL values properly
+        # Note: These are defined in schema.sql as partial unique indexes
+        # SQLAlchemy doesn't support partial unique constraints directly, so we rely on the database indexes
+        # The unique constraint is enforced at the database level via the unique indexes
     )
 
 class BusinessUnitGroup(Base):

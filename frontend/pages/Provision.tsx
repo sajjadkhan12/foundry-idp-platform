@@ -79,8 +79,8 @@ const Provision: React.FC = () => {
     } | null>(null);
     const [loadingCostEstimate, setLoadingCostEstimate] = useState(false);
     
-    // More robust admin check - case-insensitive and checks for 'admin' role
-    const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+    // Use isAdmin from context (permission-based, no hardcoded role checks)
+    const userIsAdmin = isAdmin;
 
     useEffect(() => {
         if (pluginId) {
@@ -271,7 +271,8 @@ const Provision: React.FC = () => {
         }
 
         // Check if business unit is selected (admins can bypass)
-        const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+        // Use isAdmin from context (permission-based, no hardcoded role checks)
+        const userIsAdmin = isAdmin;
         if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
             setShowBusinessUnitWarning(true);
             return;

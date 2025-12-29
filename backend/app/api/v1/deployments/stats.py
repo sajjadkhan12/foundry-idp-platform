@@ -36,9 +36,13 @@ async def deployment_stats_by_environment(
     """Get deployment counts grouped by environment"""
     # Check permissions
     from app.core.authorization import check_permission
+    from app.api.deps import is_platform_admin
+    
+    # Check if user is platform admin first (admins can see all)
+    is_admin = await is_platform_admin(current_user, db, enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer)
     
     has_list_permission = False
-    if business_unit_id:
+    if not is_admin and business_unit_id:
         has_list_permission = await check_permission(
             current_user,
             "business_unit:deployments:list",
@@ -47,23 +51,26 @@ async def deployment_stats_by_environment(
             enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer
         )
     
-    has_list_own = await check_permission(
-        current_user,
-        "user:deployments:list:own",
-        None,
-        db,
-        enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer
-    )
+    has_list_own = False
+    if not is_admin:
+        has_list_own = await check_permission(
+            current_user,
+            "user:deployments:list:own",
+            None,
+            db,
+            enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer
+        )
     
     query = select(
         Deployment.environment,
         func.count(Deployment.id).label('count')
     )
     
-    is_admin = has_list_permission
-    
     if is_admin:
-        # Can see all deployments in organization
+        # Platform admin can see all deployments in organization
+        pass
+    elif has_list_permission:
+        # Can see all deployments in business unit
         pass
     elif has_list_own:
         # Can only see own deployments

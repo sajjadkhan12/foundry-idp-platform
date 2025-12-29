@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.api.deps import get_current_active_superuser, is_allowed, get_db, OrgAwareEnforcer, get_org_aware_enforcer
 from app.schemas.rbac import RoleCreate, RoleUpdate, RoleResponse, PermissionResponse
 from app.models.rbac import Role, PermissionMetadata
-from app.core.permission_registry import parse_permission_slug, get_permission
+from app.core.permission_registry import parse_permission_slug, get_permission, find_permission_by_resource_action
 from uuid import uuid4, UUID
 from datetime import datetime
 
@@ -51,12 +51,25 @@ async def list_roles(
         for policy in role_policies:
             if len(policy) >= 4:
                 # Multi-tenant format: role is at index 0, domain at 1, obj at 2, act at 3
+                # NEW: obj now includes scope (e.g., "platform:groups" instead of just "groups")
                 obj = policy[2]
                 act = policy[3]
-                perm_slug = f"{obj}:{act}"  # Handles new format: "deployments:create:development"
                 
-                # Enrich with metadata
-                perm_def = get_permission(perm_slug)
+                # Try to find the full permission slug from registry
+                # obj may be in new format (scope:resource) or old format (resource)
+                perm_def = find_permission_by_resource_action(obj, act)
+                if perm_def:
+                    perm_slug = perm_def["slug"]  # Use full slug from registry
+                else:
+                    # Fallback: construct slug from obj and act
+                    # If obj doesn't have scope, try to construct it
+                    if ":" in obj:
+                        perm_slug = f"{obj}:{act}"
+                    else:
+                        # Old format - try to find scope from context or use as-is
+                        perm_slug = f"{obj}:{act}"
+                    perm_def = get_permission(perm_slug)
+                
                 db_perm = db_metadata.get(perm_slug)
                 
                 permissions.append(PermissionResponse(
@@ -73,10 +86,22 @@ async def list_roles(
                 ))
             elif len(policy) >= 3:
                 # Old format: role is at index 0, obj at 1, act at 2
-                perm_slug = f"{policy[1]}:{policy[2]}"
+                # NEW: obj now includes scope (e.g., "platform:groups" instead of just "groups")
+                obj = policy[1]
+                act = policy[2]
                 
-                # Enrich with metadata
-                perm_def = get_permission(perm_slug)
+                # Try to find the full permission slug from registry
+                perm_def = find_permission_by_resource_action(obj, act)
+                if perm_def:
+                    perm_slug = perm_def["slug"]  # Use full slug from registry
+                else:
+                    # Fallback: construct slug from obj and act
+                    if ":" in obj:
+                        perm_slug = f"{obj}:{act}"
+                    else:
+                        perm_slug = f"{obj}:{act}"
+                    perm_def = get_permission(perm_slug)
+                
                 db_perm = db_metadata.get(perm_slug)
                 
                 permissions.append(PermissionResponse(
@@ -96,6 +121,7 @@ async def list_roles(
             id=role.id,
             name=role.name,
             description=role.description,
+            is_platform_role=role.is_platform_role,
             created_at=role.created_at,
             permissions=permissions
         ))
@@ -137,6 +163,8 @@ async def create_role(
         for perm_slug in role_in.permissions:
             obj, act = parse_permission_slug(perm_slug)
             enforcer.add_policy(role.name, obj, act)
+        # Save policies to persist changes
+        enforcer.save_policy()
     
     # Get metadata for response (gracefully handle if table doesn't exist yet)
     db_metadata = {}
@@ -170,6 +198,7 @@ async def create_role(
         id=role.id,
         name=role.name,
         description=role.description,
+        is_platform_role=role.is_platform_role,
         created_at=role.created_at,
         permissions=permissions
     )
@@ -209,13 +238,80 @@ async def update_role(
     # But permissions might change.
     
     if role_in.permissions is not None:
-        # Remove old permissions
-        enforcer.remove_filtered_policy(0, old_name)
+        # Get organization domain for proper policy removal
+        from app.core.organization import get_user_organization, get_organization_domain
+        from app.logger import logger
+        org = await get_user_organization(current_user, db)
+        org_domain = get_organization_domain(org)
         
-        # Add new permissions using new format parser
+        logger.info(f"Updating role '{role.name}' (old name: '{old_name}') with {len(role_in.permissions)} permissions in org domain '{org_domain}'")
+        logger.info(f"Permission slugs received: {role_in.permissions}")
+        
+        # Get count of old policies before removal
+        old_policies = enforcer.get_filtered_policy(0, old_name, org_domain)
+        old_count = len(old_policies) if old_policies else 0
+        logger.info(f"Found {old_count} existing policies for role '{old_name}' in domain '{org_domain}'")
+        
+        # Remove old permissions for this role in this organization domain
+        # Policies are stored as [role_name, org_domain, obj, act]
+        # Use remove_filtered_policy to remove all policies matching role_name and org_domain
+        removed_result = enforcer.remove_filtered_policy(0, old_name, org_domain)
+        logger.info(f"remove_filtered_policy returned: {removed_result}")
+        
+        # Reload policies after removal to ensure they're cleared from memory
+        enforcer.load_policy()
+        
+        # Verify removal worked
+        remaining_old = enforcer.get_filtered_policy(0, old_name, org_domain)
+        if remaining_old:
+            logger.warning(f"Warning: {len(remaining_old)} old policies still exist after removal. Attempting manual removal...")
+            # Access base enforcer to manually remove remaining policies
+            base_enforcer = enforcer._enforcer
+            if hasattr(enforcer._enforcer, 'enforcer'):
+                base_enforcer = enforcer._enforcer.enforcer
+            for policy in remaining_old:
+                base_enforcer.remove_policy(*policy)
+            enforcer.load_policy()
+        
+        # All permissions are now unique (scope included in object name)
+        # No deduplication needed - just add all permissions
+        logger.info(f"Adding {len(role_in.permissions)} permissions to role '{role.name}'")
+        
+        # Add new permissions using new format parser (scope included in obj)
+        added_count = 0
+        failed_count = 0
+        skipped_count = 0
         for perm_slug in role_in.permissions:
-            obj, act = parse_permission_slug(perm_slug)
-            enforcer.add_policy(role.name, obj, act)
+            try:
+                obj, act = parse_permission_slug(perm_slug)
+                # Check if policy already exists (shouldn't after removal, but check anyway)
+                existing = enforcer.get_filtered_policy(0, role.name, org_domain, obj, act)
+                if existing:
+                    logger.debug(f"Policy already exists for slug '{perm_slug}' -> obj='{obj}', act='{act}', skipping")
+                    skipped_count += 1
+                    continue
+                
+                result = enforcer.add_policy(role.name, obj, act)
+                if result:
+                    added_count += 1
+                    logger.info(f"Added policy: role='{role.name}', obj='{obj}', act='{act}' (from slug '{perm_slug}')")
+                else:
+                    failed_count += 1
+                    logger.warning(f"Failed to add policy for slug '{perm_slug}' -> obj='{obj}', act='{act}' (add_policy returned False)")
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"Error parsing/adding permission slug '{perm_slug}': {e}", exc_info=True)
+        
+        logger.info(f"Added {added_count} policies, {failed_count} failed for role '{role.name}'")
+        
+        # Save policies to persist changes
+        save_result = enforcer.save_policy()
+        logger.info(f"Policy save result: {save_result}")
+        
+        # Verify policies were saved by reloading and checking
+        enforcer.load_policy()
+        saved_policies = enforcer.get_filtered_policy(0, role.name, org_domain)
+        logger.info(f"Verified: {len(saved_policies)} policies now exist for role '{role.name}' in domain '{org_domain}'")
                 
     return await get_role(role.id, db, enforcer, current_user)
 
@@ -247,12 +343,22 @@ async def get_role(
         # New format: obj="deployments", act="create:development" -> slug="deployments:create:development"
         if len(policy) >= 4:
             # Multi-tenant format: role is at index 0, domain at 1, obj at 2, act at 3
+            # NEW: obj now includes scope (e.g., "platform:groups" instead of just "groups")
             obj = policy[2]
             act = policy[3]
-            perm_slug = f"{obj}:{act}"  # Handles new format: "deployments:create:development"
             
-            # Enrich with metadata
-            perm_def = get_permission(perm_slug)
+            # Try to find the full permission slug from registry
+            perm_def = find_permission_by_resource_action(obj, act)
+            if perm_def:
+                perm_slug = perm_def["slug"]  # Use full slug from registry (e.g., "platform:users:list")
+            else:
+                # Fallback: construct slug from obj and act
+                if ":" in obj:
+                    perm_slug = f"{obj}:{act}"
+                else:
+                    perm_slug = f"{obj}:{act}"
+                perm_def = get_permission(perm_slug)
+            
             db_perm = db_metadata.get(perm_slug)
             
             permissions.append(PermissionResponse(
@@ -269,10 +375,18 @@ async def get_role(
             ))
         elif len(policy) >= 3:
             # Old format: role is at index 0, obj at 1, act at 2
-            perm_slug = f"{policy[1]}:{policy[2]}"
+            obj = policy[1]
+            act = policy[2]
             
-            # Enrich with metadata
-            perm_def = get_permission(perm_slug)
+            # Try to find the full permission slug from registry (with scope prefix)
+            perm_def = find_permission_by_resource_action(obj, act)
+            if perm_def:
+                perm_slug = perm_def["slug"]  # Use full slug from registry
+            else:
+                # Fallback to constructed slug if not found in registry
+                perm_slug = f"{obj}:{act}"
+                perm_def = get_permission(perm_slug)
+            
             db_perm = db_metadata.get(perm_slug)
             
             permissions.append(PermissionResponse(
@@ -292,6 +406,7 @@ async def get_role(
         id=role.id,
         name=role.name,
         description=role.description,
+        is_platform_role=role.is_platform_role,
         created_at=role.created_at,
         permissions=permissions
     )

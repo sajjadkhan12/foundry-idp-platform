@@ -3,8 +3,9 @@ FastAPI main application entry point for DevPlatform IDP
 """
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 from pathlib import Path
 import json
@@ -100,11 +101,13 @@ async def lifespan(app: FastAPI):
     # Initialize database with default data (admin user, roles, permissions)
     try:
         from app.database import AsyncSessionLocal
-        from app.core.db_init import sync_permissions_metadata
+        from app.core.db_init import sync_permissions_metadata, fix_casbin_policy_columns
         async with AsyncSessionLocal() as db:
             await init_db(db)
             # Always sync permissions metadata to keep it up to date
             await sync_permissions_metadata(db)
+            # Fix Casbin policy columns (v4, v5 must be NULL, not empty strings)
+            await fix_casbin_policy_columns(db)
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}", exc_info=True)
         raise
@@ -145,6 +148,20 @@ if not settings.BACKEND_CORS_ORIGINS:
 
 logger.info(f"CORS configured with origins: {settings.BACKEND_CORS_ORIGINS}")
 
+# Custom middleware to add CORS headers to redirect responses
+class CORSRedirectMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # If it's a redirect, add CORS headers
+        if isinstance(response, RedirectResponse):
+            origin = request.headers.get("origin")
+            if origin and origin in settings.BACKEND_CORS_ORIGINS:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, X-Business-Unit-Id, Accept, Origin"
+        return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
@@ -160,6 +177,9 @@ app.add_middleware(
     ],
     expose_headers=["Content-Type", "Authorization"],
 )
+
+# Add redirect CORS middleware after CORS middleware
+app.add_middleware(CORSRedirectMiddleware)
 
 # Add audit logging middleware
 app.add_middleware(AuditLoggingMiddleware)

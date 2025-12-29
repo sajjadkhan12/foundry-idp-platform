@@ -22,6 +22,12 @@ formatter = logging.Formatter(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Console handler for WARNING and above (reduce verbosity)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.WARNING)
+console_handler.setFormatter(formatter)
+root_logger.addHandler(console_handler)
+
 # File handler with rotation (10MB per file, keep 5 backups)
 # Only log WARNING and ERROR to server.log
 file_handler = RotatingFileHandler(
@@ -33,18 +39,22 @@ file_handler = RotatingFileHandler(
 file_handler.setLevel(logging.WARNING)  # Only WARNING and ERROR
 file_handler.setFormatter(formatter)
 
-# Only add file handler - NO console output
 root_logger.addHandler(file_handler)
-root_logger.setLevel(logging.INFO)  # Keep root level at INFO for console if needed
+root_logger.setLevel(logging.INFO)
 
 # Suppress noisy loggers
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 # Suppress Casbin verbose policy logging
 logging.getLogger("casbin").setLevel(logging.WARNING)
 logging.getLogger("casbin.policy").setLevel(logging.WARNING)
 logging.getLogger("casbin.role").setLevel(logging.WARNING)
+# Suppress verbose application logs
+logging.getLogger("devplatform").setLevel(logging.WARNING)
+logging.getLogger("app.api.v1.users").setLevel(logging.WARNING)
+logging.getLogger("app.api.deps").setLevel(logging.WARNING)
 
 # Main application logger
 logger = logging.getLogger("devplatform")
-logger.info(f"Logging initialized. Logs will be written to: {log_file.absolute()}")
+# Only log initialization at DEBUG level to reduce console noise
+logger.debug(f"Logging initialized. Logs will be written to: {log_file.absolute()}")

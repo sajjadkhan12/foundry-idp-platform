@@ -15,7 +15,15 @@ sync_db_url = settings.DATABASE_URL.replace("+asyncpg", "")
 if "postgresql://" not in sync_db_url and "postgresql+psycopg2://" not in sync_db_url:
     sync_db_url = sync_db_url.replace("postgresql:", "postgresql+psycopg2:")
 
-engine = create_engine(sync_db_url)
+# Create engine with connection pooling for multi-worker/replica environments
+engine = create_engine(
+    sync_db_url,
+    pool_size=10,  # Base pool size
+    max_overflow=20,  # Allow overflow for multiple workers/replicas
+    pool_pre_ping=True,  # Verify connections before using
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    echo=False
+)
 
 # Initialize adapter
 adapter = Adapter(engine)
@@ -23,17 +31,53 @@ adapter = Adapter(engine)
 # Path to model.conf
 model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rbac_model.conf")
 
-# Initialize enforcer
-_base_enforcer = casbin.Enforcer(model_path, adapter)
+# Fix Casbin policy columns BEFORE initializing enforcer
+# The adapter reads all non-NULL columns, so v4/v5 must be NULL (not empty strings)
+# to avoid "invalid policy size" errors
+def _fix_casbin_policy_columns_sync():
+    """Fix Casbin policy columns using sync connection before enforcer init"""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            # Set v4, v5 to NULL for all policies
+            conn.execute(text("UPDATE casbin_rule SET v4 = NULL, v5 = NULL WHERE v4 IS NOT NULL OR v5 IS NOT NULL"))
+            # Set v3 to NULL for grouping policies (they only use v0, v1, v2)
+            conn.execute(text("UPDATE casbin_rule SET v3 = NULL WHERE ptype = 'g' AND v3 IS NOT NULL"))
+            conn.commit()
+    except Exception as e:
+        # Table might not exist yet on first run, that's OK
+        if "casbin_rule" not in str(e).lower() or "does not exist" not in str(e).lower():
+            logger.debug(f"Could not fix Casbin columns (may be first run): {e}")
+
+# Run the fix before initializing enforcer
+_fix_casbin_policy_columns_sync()
+
+# Initialize enforcer with error handling
+try:
+    _base_enforcer = casbin.Enforcer(model_path, adapter)
+except Exception as e:
+    # If initialization fails, try to clean up any problematic rows and retry
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to initialize Casbin enforcer: {e}")
+    logger.error("This might be due to NULL or empty string values in casbin_rule table v4/v5 columns.")
+    logger.error("Please run: UPDATE casbin_rule SET v4 = NULL, v5 = NULL;")
+    # Re-raise to fail fast
+    raise
 
 # For backward compatibility, keep the global enforcer reference
 # but it will be wrapped
 enforcer = _base_enforcer
 
-# Policy cache: track last reload time and cache TTL (5 seconds)
+# Policy cache: track last reload time and cache TTL
+# In production with multiple replicas, reduce cache time for faster sync
+import os
+_cache_ttl = float(os.getenv("CASBIN_CACHE_TTL", "2.0"))  # Default 2 seconds, configurable
 _policy_cache = {
     "last_reload": 0,
-    "cache_ttl": 5.0  # Reload policy every 5 seconds max
+    "cache_ttl": _cache_ttl
 }
 
 def _should_reload_policy() -> bool:

@@ -4,6 +4,7 @@ import { Bell, Check, Trash2, ExternalLink, Info, CheckCircle, AlertTriangle, Al
 import { Link } from 'react-router-dom';
 import api from '../services/api';
 import { useNotification } from '../contexts/NotificationContext';
+import { useAuth } from '../contexts/AuthContext';
 
 interface Notification {
     id: string;
@@ -21,24 +22,62 @@ export const NotificationCenter: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const { addNotification } = useNotification();
+    const { user } = useAuth();
     const previousNotificationIds = useRef<Set<string>>(new Set());
+    const [storedIdsLoaded, setStoredIdsLoaded] = useState<boolean>(false);
 
     const unreadCount = notifications.filter(n => !n.is_read).length;
 
-    // Load previously shown notification IDs from localStorage on mount
+    // Get storage key for current user
+    const getStorageKey = () => {
+        if (!user?.id) return 'shownNotificationIds';
+        return `shownNotificationIds_${user.id}`;
+    };
+
+    // Load previously shown notification IDs from localStorage on mount or when user changes
+    // This MUST run before loadNotifications to prevent showing popups for already-shown notifications
     useEffect(() => {
+        setStoredIdsLoaded(false);
+        
+        if (!user?.id) {
+            previousNotificationIds.current = new Set();
+            setStoredIdsLoaded(true);
+            return;
+        }
+        
         try {
-            const stored = localStorage.getItem('shownNotificationIds');
+            const storageKey = getStorageKey();
+            appLogger.debug(`Loading stored notification IDs for user ${user.id} from key: ${storageKey}`);
+            const stored = localStorage.getItem(storageKey);
             if (stored) {
                 const ids = JSON.parse(stored);
                 previousNotificationIds.current = new Set(ids);
+                appLogger.debug(`Loaded ${ids.length} previously shown notification IDs for user ${user.id}`);
+            } else {
+                previousNotificationIds.current = new Set();
+                appLogger.debug(`No stored notification IDs found for user ${user.id}`);
             }
         } catch (err) {
             appLogger.error('Failed to load shown notification IDs:', err);
+            previousNotificationIds.current = new Set();
+        } finally {
+            setStoredIdsLoaded(true);
         }
-    }, []);
+    }, [user?.id]);
 
     useEffect(() => {
+        // Only load notifications if user is logged in AND stored IDs have been loaded
+        if (!user?.id) {
+            setNotifications([]);
+            return;
+        }
+
+        // Don't load notifications until stored IDs are loaded
+        // This prevents showing popups for notifications that were already shown
+        if (!storedIdsLoaded) {
+            return;
+        }
+
         loadNotifications();
 
         // Poll for new notifications only when tab is visible
@@ -81,7 +120,7 @@ export const NotificationCenter: React.FC = () => {
             stopPolling();
             document.removeEventListener('visibilitychange', handleVisibilityChange);
         };
-    }, []);
+    }, [user?.id, storedIdsLoaded]); // Reload when user changes or when stored IDs are loaded
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -116,10 +155,14 @@ export const NotificationCenter: React.FC = () => {
                 previousNotificationIds.current.add(notification.id);
             });
             
-            // Persist only the shown notification IDs to localStorage
-            if (newUnreadNotifications.length > 0) {
+            // Persist ALL shown notification IDs to localStorage (per user) whenever we add new ones
+            // This ensures the list is always up to date, not just when new notifications are shown
+            if (newUnreadNotifications.length > 0 && user?.id) {
                 try {
-                    localStorage.setItem('shownNotificationIds', JSON.stringify(Array.from(previousNotificationIds.current)));
+                    const storageKey = getStorageKey();
+                    const idsArray = Array.from(previousNotificationIds.current);
+                    localStorage.setItem(storageKey, JSON.stringify(idsArray));
+                    appLogger.debug(`Saved ${idsArray.length} shown notification IDs for user ${user.id}`);
                 } catch (err) {
                     appLogger.error('Failed to save shown notification IDs:', err);
                 }

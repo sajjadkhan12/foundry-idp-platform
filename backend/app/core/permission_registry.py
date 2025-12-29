@@ -463,6 +463,17 @@ PERMISSIONS: List[PermissionDefinition] = [
         "icon": "🚀"
     },
     {
+        "slug": "business_unit:deployments:update",
+        "name": "Update Deployments",
+        "description": "Modify deployments in any environment within the business unit",
+        "category": "Business Unit - Deployment Management",
+        "resource": "deployments",
+        "action": "update",
+        "environment": None,
+        "scope": "business_unit",
+        "icon": "✏️"
+    },
+    {
         "slug": "business_unit:deployments:update:development",
         "name": "Update Development Deployments",
         "description": "Modify deployments in the development environment",
@@ -1138,16 +1149,106 @@ def get_all_permissions() -> List[PermissionDefinition]:
     """Get all permissions"""
     return PERMISSIONS
 
+def find_permission_by_resource_action(resource: str, action: str) -> Optional[PermissionDefinition]:
+    """
+    Find a permission in the registry by resource and action.
+    This is used to reconstruct the full permission slug from Casbin policies.
+    
+    Args:
+        resource: The resource name, which may include scope (e.g., "users", "platform:groups", "business_unit:deployments")
+        action: The action (e.g., "list", "create:development")
+    
+    Returns:
+        The permission definition if found, None otherwise
+    """
+    # Handle new format where resource includes scope (e.g., "platform:groups")
+    # Extract scope and actual resource name
+    resource_parts = resource.split(":", 1)
+    if len(resource_parts) == 2 and resource_parts[0] in ["platform", "business_unit", "user"]:
+        scope = resource_parts[0]
+        actual_resource = resource_parts[1]
+    else:
+        # Old format or no scope - try to match without scope
+        scope = None
+        actual_resource = resource
+    
+    # Search through all permissions to find one that matches
+    # Handle both formats:
+    # 1. Simple action: "list" -> matches action="list"
+    # 2. Action with environment: "create:development" -> matches action="create" AND environment="development"
+    # 3. Action with qualifier: "list:own" -> matches action="list" AND qualifier="own"
+    
+    action_parts = action.split(":")
+    base_action = action_parts[0]
+    qualifier = action_parts[1] if len(action_parts) > 1 else None
+    
+    # First, try exact match with scope
+    for perm in PERMISSIONS:
+        perm_resource = perm.get("resource")
+        perm_action = perm.get("action")
+        perm_scope = perm.get("scope")
+        
+        # Check if resource matches (with or without scope)
+        resource_matches = False
+        if scope:
+            # New format: check if scope and resource match
+            if perm_scope == scope and perm_resource == actual_resource:
+                resource_matches = True
+        else:
+            # Old format: just check resource
+            if perm_resource == actual_resource:
+                resource_matches = True
+        
+        if resource_matches and perm_action == action:
+            return perm
+    
+    # Then try matching base action with environment/qualifier
+    for perm in PERMISSIONS:
+        perm_resource = perm.get("resource")
+        perm_scope = perm.get("scope")
+        perm_action = perm.get("action")
+        perm_environment = perm.get("environment")
+        
+        # Check resource match
+        resource_matches = False
+        if scope:
+            if perm_scope == scope and perm_resource == actual_resource:
+                resource_matches = True
+        else:
+            if perm_resource == actual_resource:
+                resource_matches = True
+        
+        if not resource_matches:
+            continue
+        
+        # Match base action
+        if perm_action == base_action:
+            if qualifier:
+                # Check if qualifier matches environment
+                if perm_environment == qualifier:
+                    return perm
+            else:
+                # If no qualifier in action, match if permission also has no environment
+                if not perm_environment:
+                    return perm
+    
+    return None
+
 def parse_permission_slug(slug: str) -> tuple[str, str]:
     """
     Parse permission slug into (obj, act) for Casbin storage.
     
-    New format: scope:resource:action or scope:resource:action:environment
+    NEW FORMAT: Includes scope in object name to make permissions unique.
     Examples:
-        "platform:users:list" -> ("users", "list")
-        "business_unit:deployments:create:development" -> ("deployments", "create:development")
-        "user:profile:read" -> ("profile", "read")
-        "business_unit:deployments:history:read" -> ("deployments", "history:read")
+        "platform:users:list" -> ("platform:users", "list")
+        "business_unit:deployments:create:development" -> ("business_unit:deployments", "create:development")
+        "user:profile:read" -> ("user:profile", "read")
+        "business_unit:deployments:history:read" -> ("business_unit:deployments", "history:read")
+        "platform:groups:list" -> ("platform:groups", "list")
+        "business_unit:groups:list" -> ("business_unit:groups", "list")  # Now unique!
+    
+    This ensures that platform:groups:list and business_unit:groups:list are stored
+    as different permissions in Casbin, eliminating duplicates.
     """
     import re
     
@@ -1162,21 +1263,24 @@ def parse_permission_slug(slug: str) -> tuple[str, str]:
         scope = parts[0]
         resource = parts[1]
         
+        # Include scope in object name to make permissions unique
+        obj = f"{scope}:{resource}"
+        
         if len(parts) == 3:
             # Format: scope:resource:action
-            return resource, parts[2]
+            return obj, parts[2]
         elif len(parts) == 4:
             # Format: scope:resource:action:environment or scope:resource:action:qualifier
-            return resource, f"{parts[2]}:{parts[3]}"
+            return obj, f"{parts[2]}:{parts[3]}"
         elif len(parts) == 5:
             # Format: scope:resource:action:subaction:environment (e.g., platform:plugins:access:manage)
-            return resource, f"{parts[2]}:{parts[3]}:{parts[4]}"
+            return obj, f"{parts[2]}:{parts[3]}:{parts[4]}"
         else:
             raise ValueError(f"Invalid permission slug format: {slug}")
     
     # Old format support (for backward compatibility during transition)
     if len(parts) == 2:
-        # General permission: resource:action
+        # General permission: resource:action (no scope - legacy)
         return parts[0], parts[1]
     elif len(parts) == 3:
         # Could be environment permission (resource:action:environment) 

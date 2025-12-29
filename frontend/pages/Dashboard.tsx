@@ -79,7 +79,8 @@ export const DashboardPage: React.FC = () => {
         }
         
         // Check if business unit is selected (admins can bypass)
-        const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+        // Use isAdmin from context (permission-based, no hardcoded role checks)
+        const userIsAdmin = isAdmin;
         if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
             setShowBusinessUnitWarning(true);
             setLoading(false);
@@ -315,7 +316,8 @@ export const DashboardPage: React.FC = () => {
                         <Link 
                             to="/deployments" 
                             onClick={(e) => {
-                                const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+                                // Use isAdmin from context (permission-based, no hardcoded role checks)
+        const userIsAdmin = isAdmin;
                                 if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
                                     e.preventDefault();
                                     setShowBusinessUnitWarning(true);
@@ -333,7 +335,8 @@ export const DashboardPage: React.FC = () => {
                                     key={deployment.id}
                                     to={`/deployment/${deployment.id}`}
                                     onClick={(e) => {
-                                        const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+                                        // Use isAdmin from context (permission-based, no hardcoded role checks)
+        const userIsAdmin = isAdmin;
                                         if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
                                             e.preventDefault();
                                             setShowBusinessUnitWarning(true);
@@ -514,7 +517,8 @@ export const DashboardPage: React.FC = () => {
                                     key={env}
                                     to={`/deployments?environment=${env}`}
                                     onClick={(e) => {
-                                        const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+                                        // Use isAdmin from context (permission-based, no hardcoded role checks)
+        const userIsAdmin = isAdmin;
                                         if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
                                             e.preventDefault();
                                             setShowBusinessUnitWarning(true);

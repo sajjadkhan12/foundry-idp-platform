@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, MoreVertical, Shield, User as UserIcon, Lock, CheckCircle2, XCircle, Edit2, Save, X, Trash2, Users, AlertCircle, Loader } from 'lucide-react';
+import { Search, Filter, MoreVertical, User as UserIcon, Lock, CheckCircle2, XCircle, Edit2, Save, X, Trash2, Users, AlertCircle, Loader } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { API_URL } from '../constants/api';
@@ -18,15 +18,25 @@ interface User {
     created_at: string;
 }
 
+interface Role {
+    id: string;
+    name: string;
+    description?: string;
+    is_platform_role?: boolean;
+}
+
 export const UsersPage: React.FC = () => {
     const [users, setUsers] = useState<User[]>([]);
+    const [roles, setRoles] = useState<Role[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadingRoles, setLoadingRoles] = useState(true);
     const [search, setSearch] = useState('');
     const [roleFilter, setRoleFilter] = useState('');
     const [selectedUser, setSelectedUser] = useState<User | null>(null);
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [editForm, setEditForm] = useState({
-        role: '',
+        email: '',
+        full_name: '',
         password: '',
         is_active: true
     });
@@ -61,6 +71,29 @@ export const UsersPage: React.FC = () => {
         }
     };
 
+    const fetchRoles = async () => {
+        setLoadingRoles(true);
+        try {
+            const response = await api.listRoles({ skip: 0, limit: 100 });
+            
+            // Handle both old format (array) and new format (object with items/total)
+            if (Array.isArray(response)) {
+                setRoles(response);
+            } else {
+                setRoles(response?.items || []);
+            }
+        } catch (error) {
+            appLogger.error('Failed to fetch roles:', error);
+            setRoles([]); // Ensure roles is always an array
+        } finally {
+            setLoadingRoles(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchRoles();
+    }, []);
+
     useEffect(() => {
         const debounce = setTimeout(() => {
             setCurrentPage(1); // Reset to first page when search/filter changes
@@ -76,7 +109,8 @@ export const UsersPage: React.FC = () => {
     const handleEditClick = (user: User) => {
         setSelectedUser(user);
         setEditForm({
-            role: user.roles?.[0] || 'engineer',
+            email: user.email,
+            full_name: user.full_name || '',
             password: '',
             is_active: user.is_active
         });
@@ -89,7 +123,8 @@ export const UsersPage: React.FC = () => {
 
         try {
             const updateData: any = {
-                roles: [editForm.role],
+                email: editForm.email,
+                full_name: editForm.full_name || null,
                 is_active: editForm.is_active
             };
 
@@ -211,10 +246,14 @@ export const UsersPage: React.FC = () => {
                         value={roleFilter}
                         onChange={(e) => setRoleFilter(e.target.value)}
                         className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                        disabled={loadingRoles}
                     >
                         <option value="">All Roles</option>
-                        <option value="admin">Admin</option>
-                        <option value="engineer">Engineer</option>
+                        {roles.map((role) => (
+                            <option key={role.id} value={role.name}>
+                                {role.name.charAt(0).toUpperCase() + role.name.slice(1).replace(/-/g, ' ')}
+                            </option>
+                        ))}
                     </select>
                 </div>
             </div>
@@ -282,26 +321,28 @@ export const UsersPage: React.FC = () => {
                                         <td className="px-6 py-4">
                                             <div className="flex flex-wrap gap-1">
                                                 {user.roles && user.roles.length > 0 ? (
-                                                    user.roles.map((role) => {
-                                                        // Distinguish between roles and groups
-                                                        // Standard roles: admin, engineer
-                                                        // Groups: anything else (custom names)
-                                                        const isStandardRole = role === 'admin' || role === 'engineer';
-                                                        const isAdmin = role === 'admin';
-
+                                                    user.roles.map((roleName) => {
+                                                        // Check if this role is a platform role or BU role
+                                                        const roleInfo = roles.find(r => r.name === roleName);
+                                                        const isPlatformRole = roleInfo?.is_platform_role === true;
+                                                        
                                                         return (
                                                             <span
-                                                                key={role}
-                                                                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${isAdmin
-                                                                    ? 'bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-800'
-                                                                    : isStandardRole
-                                                                        ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800'
-                                                                        : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800'
-                                                                    }`}
+                                                                key={roleName}
+                                                                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                                                                    isPlatformRole
+                                                                        ? 'bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-800'
+                                                                        : 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800'
+                                                                }`}
                                                             >
-                                                                {isAdmin ? <Shield className="w-3 h-3" /> : isStandardRole ? <UserIcon className="w-3 h-3" /> : <Users className="w-3 h-3" />}
-                                                                {/* Capitalize first letter of role/group name */}
-                                                                {role.charAt(0).toUpperCase() + role.slice(1).replace(/-/g, ' ')}
+                                                                <UserIcon className="w-3 h-3" />
+                                                                {/* Capitalize first letter of role name */}
+                                                                {roleName.charAt(0).toUpperCase() + roleName.slice(1).replace(/-/g, ' ')}
+                                                                {isPlatformRole ? (
+                                                                    <span className="ml-1 text-[10px] opacity-75">(Platform)</span>
+                                                                ) : (
+                                                                    <span className="ml-1 text-[10px] opacity-75">(BU)</span>
+                                                                )}
                                                             </span>
                                                         );
                                                     })
@@ -484,28 +525,25 @@ export const UsersPage: React.FC = () => {
                                 )}
 
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">User</label>
-                                    <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg flex items-center gap-3">
-                                        <div className="w-8 h-8 rounded-full bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center text-orange-600 dark:text-orange-400 font-bold text-xs">
-                                            {selectedUser.username.charAt(0).toUpperCase()}
-                                        </div>
-                                        <div>
-                                            <p className="text-sm font-medium text-gray-900 dark:text-white">{selectedUser.full_name || selectedUser.username}</p>
-                                            <p className="text-xs text-gray-500">{selectedUser.email}</p>
-                                        </div>
-                                    </div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name</label>
+                                    <input
+                                        type="text"
+                                        value={editForm.full_name}
+                                        onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                                        placeholder="Enter full name"
+                                    />
                                 </div>
 
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Role</label>
-                                    <select
-                                        value={editForm.role}
-                                        onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                                    <input
+                                        type="email"
+                                        value={editForm.email}
+                                        onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
                                         className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                                    >
-                                        <option value="engineer">Engineer</option>
-                                        <option value="admin">Administrator</option>
-                                    </select>
+                                        placeholder="Enter email address"
+                                    />
                                 </div>
 
                                 <div>

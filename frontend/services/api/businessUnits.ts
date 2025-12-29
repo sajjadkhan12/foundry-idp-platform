@@ -35,7 +35,8 @@ export interface BusinessUnitUpdate {
 
 export interface BusinessUnitMemberAdd {
     user_email: string;
-    role_id?: string;  // Role ID (UUID)
+    role_ids?: string[];  // List of Role IDs (UUIDs)
+    role_id?: string;  // Single Role ID (for backward compatibility)
     role?: string;  // Role name (for backward compatibility)
 }
 
@@ -89,8 +90,11 @@ export const businessUnitsApi = {
         });
     },
 
-    async removeMember(businessUnitId: string, userId: string): Promise<void> {
-        return apiClient.request<void>(`/api/v1/business-units/${businessUnitId}/members/${userId}`, {
+    async removeMember(businessUnitId: string, userId: string, roleId?: string): Promise<void> {
+        const url = roleId 
+            ? `/api/v1/business-units/${businessUnitId}/members/${userId}?role_id=${roleId}`
+            : `/api/v1/business-units/${businessUnitId}/members/${userId}`;
+        return apiClient.request<void>(url, {
             method: 'DELETE'
         });
     },

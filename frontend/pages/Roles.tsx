@@ -15,6 +15,7 @@ interface Permission {
     environment?: string;
     icon?: string;
     created_at?: string;
+    equivalent_slugs?: string[];  // All permission slugs that map to the same (obj, act) pair
 }
 
 interface Role {
@@ -57,6 +58,7 @@ export const RolesPage: React.FC = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const [itemsPerPage, setItemsPerPage] = useState(50);
     const [totalItems, setTotalItems] = useState(0);
+    const [roleFilter, setRoleFilter] = useState<'all' | 'platform' | 'business_unit'>('all');
 
     const fetchRoles = async () => {
         setLoading(true);
@@ -134,8 +136,12 @@ export const RolesPage: React.FC = () => {
                 let cleanSlug = slug.replace(buPrefixPattern, '');
                 // Try to find the original permission slug from the permissions list
                 const originalPerm = permissions.find(p => p.slug.toLowerCase() === cleanSlug.toLowerCase());
-                return originalPerm ? originalPerm.slug : cleanSlug;
+                const finalSlug = originalPerm ? originalPerm.slug : cleanSlug;
+                appLogger.debug(`Permission mapping: selected='${slug}' -> clean='${cleanSlug}' -> final='${finalSlug}'`);
+                return finalSlug;
             });
+            
+            appLogger.info(`Updating role '${selectedRole.name}' with ${cleanPermissionSlugs.length} permissions:`, cleanPermissionSlugs);
             
             await api.updateRole(selectedRole.id, {
                 name: formData.name,
@@ -143,10 +149,13 @@ export const RolesPage: React.FC = () => {
                 permissions: cleanPermissionSlugs,
                 is_platform_role: formData.is_platform_role
             });
+            
+            appLogger.info(`Role '${selectedRole.name}' updated successfully`);
             setMessage({ type: 'success', text: 'Role updated successfully' });
             setIsEditModalOpen(false);
             fetchRoles();
         } catch (error: any) {
+            appLogger.error('Failed to update role:', error);
             setMessage({ type: 'error', text: error.message || 'Failed to update role' });
         }
     };
@@ -166,16 +175,10 @@ export const RolesPage: React.FC = () => {
         setSelectedPermissions(prev => {
             const newSet = new Set(prev);
             const normalizedSlug = permSlug.toLowerCase().trim();
-            // Check both normalized and original format
-            const hasNormalized = newSet.has(normalizedSlug);
-            const hasOriginal = newSet.has(permSlug);
             
-            if (hasNormalized || hasOriginal) {
-                // Remove both normalized and original if they exist
+            if (newSet.has(normalizedSlug)) {
                 newSet.delete(normalizedSlug);
-                newSet.delete(permSlug);
             } else {
-                // Add normalized version for consistency
                 newSet.add(normalizedSlug);
             }
             return newSet;
@@ -203,7 +206,7 @@ export const RolesPage: React.FC = () => {
             setFormData({ 
                 name: fullRole.name, 
                 description: fullRole.description || '',
-                is_platform_role: fullRole.is_platform_role || false
+                is_platform_role: fullRole.is_platform_role === true  // Explicitly check for true
             });
             
             // Extract permission slugs from the fetched role
@@ -223,7 +226,6 @@ export const RolesPage: React.FC = () => {
             }
             
             // IMPORTANT: Normalize permission slugs to lowercase for consistent matching
-            // This ensures that permissions from the role match permissions in the list
             const normalizedSlugs = permissionSlugs.map(slug => slug.trim().toLowerCase());
             
             // Verify that we have permissions loaded
@@ -232,7 +234,6 @@ export const RolesPage: React.FC = () => {
             }
             
             // Create a Set with normalized slugs for comparison
-            // This Set will be used to check which permissions are already assigned
             setSelectedPermissions(new Set(normalizedSlugs));
             setIsEditModalOpen(true);
             setMessage(null);
@@ -243,7 +244,7 @@ export const RolesPage: React.FC = () => {
             setFormData({ 
                 name: role.name, 
                 description: role.description || '',
-                is_platform_role: role.is_platform_role || false
+                is_platform_role: role.is_platform_role === true  // Explicitly check for true
             });
             
             // Extract permissions from role object (fallback)
@@ -272,7 +273,9 @@ export const RolesPage: React.FC = () => {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Role Management</h1>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Define roles and assign permissions</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                        Define roles and assign permissions. <span className="font-medium text-orange-600 dark:text-orange-400">Platform roles</span> apply globally, while <span className="font-medium text-blue-600 dark:text-blue-400">Business Unit roles</span> are scoped to specific business units.
+                    </p>
                 </div>
                 <button
                     onClick={openCreateModal}
@@ -288,39 +291,103 @@ export const RolesPage: React.FC = () => {
                 </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {loading ? (
-                    <p className="text-gray-500 dark:text-gray-400">Loading roles...</p>
-                ) : roles.map((role) => (
-                    <div key={role.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow">
-                        <div className="flex justify-between items-start mb-4">
-                            <div className="p-2 bg-orange-50 dark:bg-orange-900/20 rounded-lg">
-                                <Shield className="w-6 h-6 text-orange-600 dark:text-orange-400" />
-                            </div>
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => openEditModal(role)}
-                                    className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-                                >
-                                    <Edit2 className="w-4 h-4" />
-                                </button>
-                                <button
-                                    onClick={() => handleDeleteRole(role.id)}
-                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            </div>
-                        </div>
-                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">{role.name}</h3>
-                        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 h-10 line-clamp-2">{role.description || 'No description'}</p>
-
-                        <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
-                            <span className="text-sm text-gray-500 dark:text-gray-400">{role.permissions?.length || 0} permissions</span>
-                        </div>
-                    </div>
-                ))}
+            {/* Role Type Filter Tabs */}
+            <div className="flex gap-2 border-b border-gray-200 dark:border-gray-800">
+                <button
+                    onClick={() => setRoleFilter('all')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        roleFilter === 'all'
+                            ? 'border-orange-600 text-orange-600 dark:text-orange-400'
+                            : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                    }`}
+                >
+                    All Roles
+                </button>
+                <button
+                    onClick={() => setRoleFilter('platform')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        roleFilter === 'platform'
+                            ? 'border-orange-600 text-orange-600 dark:text-orange-400'
+                            : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                    }`}
+                >
+                    Platform Roles
+                </button>
+                <button
+                    onClick={() => setRoleFilter('business_unit')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        roleFilter === 'business_unit'
+                            ? 'border-orange-600 text-orange-600 dark:text-orange-400'
+                            : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                    }`}
+                >
+                    Business Unit Roles
+                </button>
             </div>
+
+            {/* Filtered Roles */}
+            {(() => {
+                const filteredRoles = roleFilter === 'all' 
+                    ? roles 
+                    : roleFilter === 'platform'
+                    ? roles.filter(r => r.is_platform_role === true)
+                    : roles.filter(r => r.is_platform_role === false);
+
+                return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {loading ? (
+                            <p className="text-gray-500 dark:text-gray-400">Loading roles...</p>
+                        ) : filteredRoles.length === 0 ? (
+                            <div className="col-span-full text-center py-12 text-gray-500 dark:text-gray-400">
+                                <Shield className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                                <p className="text-lg font-medium mb-2">No {roleFilter === 'all' ? '' : roleFilter === 'platform' ? 'platform ' : 'business unit '}roles found</p>
+                                <p className="text-sm">Create a new role to get started</p>
+                            </div>
+                        ) : (
+                            filteredRoles.map((role) => (
+                                <div key={role.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div className="p-2 bg-orange-50 dark:bg-orange-900/20 rounded-lg">
+                                            <Shield className="w-6 h-6 text-orange-600 dark:text-orange-400" />
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={() => openEditModal(role)}
+                                                className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                                            >
+                                                <Edit2 className="w-4 h-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteRole(role.id)}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{role.name}</h3>
+                                        {role.is_platform_role ? (
+                                            <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 rounded-full">
+                                                Platform
+                                            </span>
+                                        ) : (
+                                            <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded-full">
+                                                Business Unit
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 h-10 line-clamp-2">{role.description || 'No description'}</p>
+
+                                    <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
+                                        <span className="text-sm text-gray-500 dark:text-gray-400">{role.permissions?.length || 0} permissions</span>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                );
+            })()}
 
             {/* Pagination */}
             {totalItems > 0 && (
@@ -500,7 +567,7 @@ export const RolesPage: React.FC = () => {
                                             
                                             // Count selected permissions in this scope
                                             const selectedInScope = scopePerms.filter(p => 
-                                                selectedPermissions.has(p.slug.toLowerCase())
+                                                selectedPermissions.has(p.slug.toLowerCase().trim())
                                             ).length;
                                             
                                             const metadata = scopeMetadata[scope as keyof typeof scopeMetadata];
@@ -526,7 +593,7 @@ export const RolesPage: React.FC = () => {
                                                         {sortedResources.map(resource => {
                                                             const resourcePerms = permsByResource[resource];
                                                             const selectedInResource = resourcePerms.filter(p => 
-                                                                selectedPermissions.has(p.slug.toLowerCase())
+                                                                selectedPermissions.has(p.slug.toLowerCase().trim())
                                                             ).length;
                                                             
                                                             return (
@@ -569,14 +636,13 @@ export const RolesPage: React.FC = () => {
                                                                                             {perm.icon && <span>{perm.icon}</span>}
                                                                                             {perm.name || perm.slug}
                                                                                         </p>
+                                                                                        {/* Always show permission slug */}
+                                                                                        <p className={`text-xs ${isChecked ? 'text-orange-600 dark:text-orange-400' : 'text-blue-600 dark:text-blue-400'} mt-0.5 font-mono font-medium`}>
+                                                                                            {perm.slug}
+                                                                                        </p>
                                                                                         {perm.description && (
                                                                                             <p className={`text-xs ${isChecked ? 'text-orange-700 dark:text-orange-300' : 'text-gray-500 dark:text-gray-400'} mt-0.5`}>
                                                                                                 {perm.description}
-                                                                                            </p>
-                                                                                        )}
-                                                                                        {!perm.description && perm.slug && (
-                                                                                            <p className={`text-xs ${isChecked ? 'text-orange-700 dark:text-orange-300' : 'text-gray-500 dark:text-gray-400'} mt-0.5 font-mono`}>
-                                                                                                {perm.slug}
                                                                                             </p>
                                                                                         )}
                                                                                     </div>

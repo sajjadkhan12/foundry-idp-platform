@@ -29,6 +29,7 @@ interface User {
     full_name: string;
     roles: string[];  // Now an array of role names from Casbin
     is_active: boolean;
+    is_admin?: boolean;  // Whether user has platform admin permissions (from backend)
     avatar_url?: string;
     created_at?: string;
 }
@@ -273,7 +274,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('activeBusinessUnit');
     };
 
-    const isAdmin = user?.roles.includes('admin') || false;
+    // Use is_admin from backend - backend calculates this using is_platform_admin which checks permissions
+    // No hardcoded role checks - fully permission-based
+    const isAdmin = user?.is_admin || false;
+    
     // Admins have access even without business units, regular users need business unit access
     const hasBusinessUnitAccess = isAdmin || businessUnits.length > 0;
     // Check if user can manage members in any business unit (permission-based, not role-name-based)
