@@ -52,7 +52,7 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
+            type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image for ${{ matrix.component }}
@@ -83,9 +83,14 @@ jobs:
           # Try to find semver tag first (v1.0.0 format)
           PRIMARY_TAG=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
           
-          # If no semver, try branch-sha format (e.g., main-abc1234)
+          # If no semver, try branch name format (e.g., main)
           if [ -z "$PRIMARY_TAG" ]; then
-            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^[a-zA-Z0-9_-]+-[a-f0-9]{7,}$' | head -n1)
+            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^[a-zA-Z0-9_-]+$' | grep -v '^sha-' | head -n1)
+          fi
+          
+          # If no branch tag, try sha- format (e.g., sha-abc1234)
+          if [ -z "$PRIMARY_TAG" ]; then
+            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^sha-[a-f0-9]+$' | head -n1)
           fi
           
           # If still no tag, try latest
@@ -93,9 +98,9 @@ jobs:
             PRIMARY_TAG=$(echo "$TAGS" | grep 'latest' | head -n1)
           fi
           
-          # If still no tag, get the first non-empty line
+          # If still no tag, get the first non-empty line that doesn't start with hyphen
           if [ -z "$PRIMARY_TAG" ]; then
-            PRIMARY_TAG=$(echo "$TAGS" | grep -v '^$' | head -n1)
+            PRIMARY_TAG=$(echo "$TAGS" | grep -v '^$' | grep -v '^-' | head -n1)
           fi
           
           # Clean up any whitespace and ensure it's valid
