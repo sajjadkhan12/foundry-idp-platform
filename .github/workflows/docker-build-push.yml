@@ -188,12 +188,15 @@ jobs:
           FRONTEND_IMAGE: ${{ steps.extract-tags.outputs.frontend_image }}
         run: |
           git add deployment-backend.yaml deployment-frontend.yaml deployment-worker.yaml
-          
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: update image tags to ${BACKEND_TAG}" -m "- backend: ${BACKEND_IMAGE}" -m "- frontend: ${FRONTEND_IMAGE}" -m "- worker: ${BACKEND_IMAGE}" -m "[skip ci]"
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: update image tags to ${BACKEND_TAG}" \
+              -m "- backend: ${BACKEND_IMAGE}" \
+              -m "- frontend: ${FRONTEND_IMAGE}" \
+              -m "- worker: ${BACKEND_IMAGE}" \
+              -m "[skip ci]"
             git push
             echo "Manifests updated and pushed successfully"
+          else
+            echo "No changes to commit"
           fi
 
