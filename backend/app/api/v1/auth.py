@@ -76,8 +76,20 @@ async def get_user_with_roles(user: User, db: AsyncSession) -> UserResponse:
     else:
         roles = []
     
+    # Check if user is platform admin
+    # Create OrgAwareEnforcer with proper org_domain for is_platform_admin check
+    from app.api.deps import is_platform_admin, OrgAwareEnforcer
+    from app.core.casbin import get_enforcer as get_base_enforcer
+    base_enforcer = get_base_enforcer()
+    if hasattr(base_enforcer, 'set_org_domain'):
+        base_enforcer.set_org_domain(org_domain)
+    # Wrap in OrgAwareEnforcer to ensure org_domain is properly handled
+    org_aware_enforcer = OrgAwareEnforcer(base_enforcer, org_domain)
+    user_is_admin = await is_platform_admin(user, db, org_aware_enforcer)
+    
     user_response = UserResponse.model_validate(user)
     user_response.roles = roles
+    user_response.is_admin = user_is_admin
     return user_response
 
 @router.post("/login", response_model=TokenResponse)

@@ -284,8 +284,12 @@ async def provision(
         job.deployment_id = deployment.id
         
         await db.commit()
-        await db.refresh(job)
-        await db.refresh(deployment)
+        
+        # Note: We don't refresh the job/deployment here because:
+        # 1. We already have all the data we need in memory
+        # 2. The JobResponse schema doesn't require relationships
+        # 3. Refresh can fail in async contexts with relationship loading
+        # If we need fresh data, we can query it, but it's not necessary here
         
         # Route to appropriate Celery task based on deployment type
         if deployment_type == "microservice":

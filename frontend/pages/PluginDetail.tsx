@@ -30,8 +30,8 @@ export const PluginDetailPage: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showBusinessUnitWarning, setShowBusinessUnitWarning] = useState(false);
   
-  // More robust admin check - case-insensitive and checks for 'admin' role
-  const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+  // Use isAdmin from context (permission-based, no hardcoded role checks)
+  const userIsAdmin = isAdmin;
 
   useEffect(() => {
     if (id) {

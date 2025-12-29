@@ -5,6 +5,7 @@ import api from '../services/api';
 import { appLogger } from '../utils/logger';
 import { getStatusColor, getStatusIcon } from '../utils/jobStatus';
 import { Pagination } from '../components/Pagination';
+import { useAuth } from '../contexts/AuthContext';
 
 interface Job {
     id: string;
@@ -19,6 +20,7 @@ interface Job {
 
 export const AdminJobs: React.FC = () => {
     const navigate = useNavigate();
+    const { activeBusinessUnit, isSwitchingBusinessUnit } = useAuth();
     const [jobs, setJobs] = useState<Job[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
@@ -53,14 +55,24 @@ export const AdminJobs: React.FC = () => {
         return () => clearTimeout(timer);
     }, [emailFilter]);
 
+    // Fetch jobs when business unit changes
+    useEffect(() => {
+        if (!isSwitchingBusinessUnit) {
+            loadJobs();
+        }
+    }, [activeBusinessUnit?.id, isSwitchingBusinessUnit]);
+
     // Fetch jobs when filters or pagination change
     useEffect(() => {
         loadJobs();
     }, [debouncedSearch, debouncedEmail, startDate, endDate, currentPage, itemsPerPage]);
 
-    const loadJobs = async () => {
-        try {
+    const loadJobs = async (skipPolling = false) => {
+        // Show loading when switching business units (unless it's a polling call)
+        if (!skipPolling) {
             setLoading(true);
+        }
+        try {
             const skip = (currentPage - 1) * itemsPerPage;
             const response = await api.listJobs({
                 jobId: debouncedSearch || undefined,
@@ -420,7 +432,7 @@ export const AdminJobs: React.FC = () => {
                                     />
                                 </th>
                                 <th className="px-6 py-4 font-medium text-gray-500 dark:text-gray-400">Job ID</th>
-                                <th className="px-6 py-4 font-medium text-gray-500 dark:text-gray-400">Status</th>
+                                <th className="px-6 py-4 font-medium text-gray-500 dark:text-gray-400 w-32">Status</th>
                                 <th className="px-6 py-4 font-medium text-gray-500 dark:text-gray-400">Triggered By</th>
                                 <th className="px-6 py-4 font-medium text-gray-500 dark:text-gray-400">Created</th>
                                 <th className="px-6 py-4 font-medium text-gray-500 dark:text-gray-400">Finished</th>
@@ -459,9 +471,9 @@ export const AdminJobs: React.FC = () => {
                                                 {job.id.substring(0, 8)}...
                                             </code>
                                         </td>
-                                        <td className="px-6 py-4">
+                                        <td className="px-6 py-4 w-32">
                                             <div className="flex flex-col gap-1">
-                                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(job.status, job)}`}>
+                                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border whitespace-nowrap ${getStatusColor(job.status, job)}`}>
                                                     {getStatusIcon(job.status)}
                                                     {job.status === 'dead_letter' ? 'Dead Letter' : job.status}
                                                 </span>
@@ -471,7 +483,7 @@ export const AdminJobs: React.FC = () => {
                                                     </span>
                                                 )}
                                                 {job.error_state && (
-                                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                                    <span className="text-xs text-gray-500 dark:text-gray-400 truncate" title={job.error_state}>
                                                         Error: {job.error_state}
                                                     </span>
                                                 )}

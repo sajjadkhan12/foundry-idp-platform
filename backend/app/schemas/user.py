@@ -32,6 +32,7 @@ class UserResponse(BaseModel):
     roles: List[str] = []  # List of role names from Casbin
     avatar_url: Optional[str] = None
     is_active: bool
+    is_admin: bool = False  # Whether user has platform admin permissions
     created_at: datetime
     
     model_config = {"from_attributes": True}

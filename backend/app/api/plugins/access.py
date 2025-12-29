@@ -454,13 +454,16 @@ async def grant_plugin_access(
         
         if access_request and access_request.business_unit_id:
             # Check if current user is owner of this business unit
+            # A user can have multiple roles in a BU, so get memberships with roles and take the first one
             owner_result = await db.execute(
                 select(BusinessUnitMember)
                 .options(selectinload(BusinessUnitMember.role))
                 .where(
                     BusinessUnitMember.business_unit_id == access_request.business_unit_id,
-                    BusinessUnitMember.user_id == current_user.id
+                    BusinessUnitMember.user_id == current_user.id,
+                    BusinessUnitMember.role_id.isnot(None)  # Only get memberships with roles
                 )
+                .limit(1)
             )
             membership = owner_result.scalar_one_or_none()
             if membership and membership.role:
@@ -591,13 +594,16 @@ async def reject_plugin_access_request(
         
         if access_request and access_request.business_unit_id:
             # Check if current user is owner of this business unit
+            # A user can have multiple roles in a BU, so get memberships with roles and take the first one
             owner_result = await db.execute(
                 select(BusinessUnitMember)
                 .options(selectinload(BusinessUnitMember.role))
                 .where(
                     BusinessUnitMember.business_unit_id == access_request.business_unit_id,
-                    BusinessUnitMember.user_id == current_user.id
+                    BusinessUnitMember.user_id == current_user.id,
+                    BusinessUnitMember.role_id.isnot(None)  # Only get memberships with roles
                 )
+                .limit(1)
             )
             membership = owner_result.scalar_one_or_none()
             if membership and membership.role:

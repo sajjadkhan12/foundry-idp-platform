@@ -48,7 +48,8 @@ export const DeploymentStatusPage: React.FC = () => {
             }
             
             // Check if business unit is selected (admins can bypass)
-            const userIsAdmin = isAdmin || (user?.roles || []).some(role => role.toLowerCase() === 'admin');
+            // Use isAdmin from context (permission-based, no hardcoded role checks)
+            const userIsAdmin = isAdmin;
             if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
                 setShowBusinessUnitWarning(true);
                 return;
@@ -607,65 +608,108 @@ export const DeploymentStatusPage: React.FC = () => {
                                 <p className="text-sm">No deployment history available</p>
                             </div>
                         ) : (
-                            <div className="space-y-4 max-h-[calc(100vh-300px)] overflow-y-auto">
-                                {deploymentHistory.map((entry, index) => {
-                                    const isCurrentVersion = index === 0 && deployment.status === 'active';
-                                    const timeAgo = entry.created_at ? getTimeAgo(new Date(entry.created_at)) : '';
-                                    // Only show current version as active, others as stopped (superseded)
-                                    const displayStatus = isCurrentVersion ? 'active' : 'stopped';
-                                    
-                                    return (
-                                        <div
-                                            key={entry.id}
-                                            className={`border-l-2 pl-4 pb-4 ${
-                                                isCurrentVersion
-                                                    ? 'border-green-500'
-                                                    : 'border-gray-300 dark:border-gray-600'
-                                            }`}
-                                        >
-                                            <div className="flex items-start justify-between gap-3 mb-2">
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="flex items-center gap-2 mb-2">
-                                                        <span className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                            v{entry.version_number}
-                                                        </span>
-                                                        <StatusBadge status={displayStatus} size="sm" />
+                            <div className="max-h-[400px] overflow-y-auto pr-2">
+                                {/* Show active deployment first */}
+                                {deploymentHistory.length > 0 && deploymentHistory[0] && deployment.status === 'active' && (
+                                    <div className="mb-4 pb-4 border-b border-gray-200 dark:border-gray-800">
+                                        {(() => {
+                                            const activeEntry = deploymentHistory[0];
+                                            const timeAgo = activeEntry.created_at ? getTimeAgo(new Date(activeEntry.created_at)) : '';
+                                            return (
+                                                <div className="border-l-2 border-green-500 pl-4">
+                                                    <div className="flex items-start justify-between gap-3 mb-2">
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-center gap-2 mb-2">
+                                                                <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                                    v{activeEntry.version_number}
+                                                                </span>
+                                                                <StatusBadge status="active" size="sm" />
+                                                            </div>
+                                                            {activeEntry.created_by && (
+                                                                <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                                                    Deployed by: <span className="font-medium">{activeEntry.created_by}</span>
+                                                                </p>
+                                                            )}
+                                                            {timeAgo && (
+                                                                <p className="text-xs text-gray-500 dark:text-gray-500">
+                                                                    {timeAgo}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                    {entry.created_by && (
-                                                        <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                                            Deployed by: <span className="font-medium">{entry.created_by}</span>
-                                                        </p>
-                                                    )}
-                                                    {timeAgo && (
-                                                        <p className="text-xs text-gray-500 dark:text-gray-500">
-                                                            {timeAgo}
-                                                        </p>
+                                                    {activeEntry.inputs && Object.keys(activeEntry.inputs).length > 0 && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setSelectedConfig({ inputs: activeEntry.inputs, version: activeEntry.version_number });
+                                                                setShowConfigModal(true);
+                                                            }}
+                                                            className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 font-medium flex items-center gap-1 transition-colors"
+                                                        >
+                                                            View Config <span className="text-orange-600 dark:text-orange-400">→</span>
+                                                        </button>
                                                     )}
                                                 </div>
-                                            </div>
-                                            {entry.inputs && Object.keys(entry.inputs).length > 0 && (
-                                                <button
-                                                    onClick={() => {
-                                                        setSelectedConfig({ inputs: entry.inputs, version: entry.version_number });
-                                                        setShowConfigModal(true);
-                                                    }}
-                                                    className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 font-medium flex items-center gap-1 transition-colors"
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+                                
+                                {/* Show all other versions in scrollable area */}
+                                {deploymentHistory.length > 1 && (
+                                    <div className="space-y-4">
+                                        {deploymentHistory.slice(1).map((entry) => {
+                                            const timeAgo = entry.created_at ? getTimeAgo(new Date(entry.created_at)) : '';
+                                            
+                                            return (
+                                                <div
+                                                    key={entry.id}
+                                                    className="border-l-2 border-gray-300 dark:border-gray-600 pl-4 pb-4"
                                                 >
-                                                    View Config <span className="text-orange-600 dark:text-orange-400">→</span>
-                                                </button>
-                                            )}
-                                            {!isCurrentVersion && deployment.status === 'active' && deployment.deployment_type === 'infrastructure' && (
-                                                <button
-                                                    onClick={() => handleRollback(entry.version_number)}
-                                                    disabled={isRollingBack || deployment.update_status === 'updating'}
-                                                    className="mt-2 text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                                                >
-                                                    Rollback
-                                                </button>
-                                            )}
-                                        </div>
-                                    );
-                                })}
+                                                    <div className="flex items-start justify-between gap-3 mb-2">
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-center gap-2 mb-2">
+                                                                <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                                    v{entry.version_number}
+                                                                </span>
+                                                                <StatusBadge status="stopped" size="sm" />
+                                                            </div>
+                                                            {entry.created_by && (
+                                                                <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                                                    Deployed by: <span className="font-medium">{entry.created_by}</span>
+                                                                </p>
+                                                            )}
+                                                            {timeAgo && (
+                                                                <p className="text-xs text-gray-500 dark:text-gray-500">
+                                                                    {timeAgo}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    {entry.inputs && Object.keys(entry.inputs).length > 0 && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setSelectedConfig({ inputs: entry.inputs, version: entry.version_number });
+                                                                setShowConfigModal(true);
+                                                            }}
+                                                            className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 font-medium flex items-center gap-1 transition-colors"
+                                                        >
+                                                            View Config <span className="text-orange-600 dark:text-orange-400">→</span>
+                                                        </button>
+                                                    )}
+                                                    {deployment.status === 'active' && deployment.deployment_type === 'infrastructure' && (
+                                                        <button
+                                                            onClick={() => handleRollback(entry.version_number)}
+                                                            disabled={isRollingBack || deployment.update_status === 'updating'}
+                                                            className="mt-2 text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            Rollback
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

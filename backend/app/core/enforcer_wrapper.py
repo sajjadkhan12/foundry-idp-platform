@@ -41,7 +41,20 @@ class MultiTenantEnforcerWrapper:
                 import logging
                 logging.warning(f"Organization domain not set for enforcement check: {sub}, {obj}, {act}")
                 return False
-            return self.enforcer.enforce(sub, self._org_domain, obj, act)
+            # Call base enforcer with 4 args: (sub, dom, obj, act)
+            try:
+                return self.enforcer.enforce(sub, self._org_domain, obj, act)
+            except RuntimeError as e:
+                # If we get "invalid policy size", it might be because the adapter is reading policies incorrectly
+                # Log the error for debugging
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Casbin enforce error for ({sub}, {self._org_domain}, {obj}, {act}): {e}")
+                # Try to reload policies and retry once
+                if hasattr(self.enforcer, 'load_policy'):
+                    self.enforcer.load_policy()
+                    return self.enforcer.enforce(sub, self._org_domain, obj, act)
+                raise
         elif len(args) == 3:
             # New format: sub, dom, obj, act
             return self.enforcer.enforce(sub, *args)

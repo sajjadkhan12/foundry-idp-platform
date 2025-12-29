@@ -106,6 +106,8 @@ async def init_db(db: AsyncSession):
     Initialize database with default organization and super admin user.
     Only runs if the database is empty (no users exist).
     
+    Uses PostgreSQL advisory lock to prevent race conditions when multiple pods start simultaneously.
+    
     Creates:
     - Default organization
     - Super admin user (from environment variables)
@@ -115,94 +117,172 @@ async def init_db(db: AsyncSession):
     The super admin must create these manually through the UI/API.
     """
     from app.logger import logger
+    from sqlalchemy import text
     
-    # Check if any users exist
+    # Use PostgreSQL advisory lock to prevent race conditions in multi-pod deployments
+    # Lock ID: 123456789 (arbitrary but consistent)
+    LOCK_ID = 123456789
+    lock_acquired = False
+    
     try:
-        result = await db.execute(select(User))
-        existing_users = result.scalars().first()
+        # Try to acquire advisory lock (non-blocking)
+        lock_result = await db.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": LOCK_ID})
+        lock_acquired = lock_result.scalar()
         
-        if existing_users:
-            # Database already initialized, skip
-            return
+        if not lock_acquired:
+            # Another process is initializing, wait a bit and check if already initialized
+            logger.info("Another process is initializing database, waiting...")
+            import asyncio
+            await asyncio.sleep(2)
+            
+            # Check if initialization completed
+            result = await db.execute(select(User))
+            existing_users = result.scalars().first()
+            if existing_users:
+                logger.info("Database already initialized by another process")
+                return
+            else:
+                # Still not initialized, try again (this shouldn't happen often)
+                logger.warning("Database initialization still in progress, skipping this attempt")
+                return
+        
+        try:
+            # Check if any users exist
+            result = await db.execute(select(User))
+            existing_users = result.scalars().first()
+            
+            if existing_users:
+                # Database already initialized, release lock and skip
+                await db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": LOCK_ID})
+                await db.commit()
+                lock_acquired = False  # Lock already released
+                return
+        except Exception as e:
+            # If table doesn't exist yet, we'll create it during initialization
+            logger.warning(f"Could not check for existing users (table may not exist yet): {e}")
+            # Continue with initialization
     except Exception as e:
-        # If table doesn't exist yet, we'll create it during initialization
-        logger.warning(f"Could not check for existing users (table may not exist yet): {e}")
-        # Continue with initialization
+        logger.warning(f"Could not acquire advisory lock (non-PostgreSQL or error): {e}")
+        # Fall back to simple check without locking
+        try:
+            result = await db.execute(select(User))
+            existing_users = result.scalars().first()
+            if existing_users:
+                return
+        except Exception:
+            pass
     
     # Database is empty, proceed with initialization
-    logger.info("Database is empty. Initializing with default organization and super admin user...")
+    try:
+        logger.info("Database is empty. Initializing with default organization and super admin user...")
     
-    # Create or get default organization
-    default_org = await get_or_create_default_organization(db)
-    org_domain = get_organization_domain(default_org)
-    logger.info(f"Default organization created/found: {default_org.name} (domain: {org_domain})")
-    
-    # Create Super Admin User from environment variables
-    from app.config import settings
-    admin_email = getattr(settings, "ADMIN_EMAIL")
-    admin_username = getattr(settings, "ADMIN_USERNAME")
-    admin_password = getattr(settings, "ADMIN_PASSWORD")
-    
-    admin_user = User(
-        email=admin_email,
-        username=admin_username,
-        hashed_password=get_password_hash(admin_password),
-        full_name="Super Admin",
-        is_active=True,
-        organization_id=default_org.id
-    )
-    db.add(admin_user)
-    await db.commit()
-    await db.refresh(admin_user)
-    logger.info(f"✅ Super admin user created: {admin_email}")
-    
-    # Create admin role (platform role) if it doesn't exist
-    result = await db.execute(select(Role).where(Role.name == "admin"))
-    admin_role = result.scalar_one_or_none()
-    
-    if not admin_role:
-        admin_role = Role(
-            name="admin",
-            description="Super Administrator with full access to all resources and permissions",
-            is_platform_role=True
+        # Create or get default organization
+        default_org = await get_or_create_default_organization(db)
+        org_domain = get_organization_domain(default_org)
+        logger.info(f"Default organization created/found: {default_org.name} (domain: {org_domain})")
+        
+        # Create Super Admin User from environment variables
+        from app.config import settings
+        admin_email = getattr(settings, "ADMIN_EMAIL")
+        admin_username = getattr(settings, "ADMIN_USERNAME")
+        admin_password = getattr(settings, "ADMIN_PASSWORD")
+        
+        admin_user = User(
+            email=admin_email,
+            username=admin_username,
+            hashed_password=get_password_hash(admin_password),
+            full_name="Super Admin",
+            is_active=True,
+            organization_id=default_org.id
         )
-        db.add(admin_role)
+        db.add(admin_user)
         await db.commit()
-        await db.refresh(admin_role)
-        logger.info("✅ Created 'admin' role (platform role)")
-    else:
-        # Ensure admin role is marked as platform role
-        if not admin_role.is_platform_role:
-            admin_role.is_platform_role = True
+        await db.refresh(admin_user)
+        logger.info(f"✅ Super admin user created: {admin_email}")
+        
+        # Create admin role (platform role) if it doesn't exist
+        result = await db.execute(select(Role).where(Role.name == "admin"))
+        admin_role = result.scalar_one_or_none()
+        
+        if not admin_role:
+            admin_role = Role(
+                name="admin",
+                description="Super Administrator with full access to all resources and permissions",
+                is_platform_role=True
+            )
+            db.add(admin_role)
             await db.commit()
-            logger.info("✅ Updated 'admin' role to platform role")
-    
-    # Assign admin role to super admin user in Casbin
-    user_id = str(admin_user.id)
-    enforcer.add_grouping_policy(user_id, "admin", org_domain)
-    logger.info(f"✅ Assigned 'admin' role to super admin user")
-    
-    # Get ALL platform permissions from the permission registry
-    # Super admin gets all platform-level permissions (platform:*)
-    from app.core.permission_registry import get_platform_permissions
-    platform_permission_slugs = get_platform_permissions()
-    
-    logger.info(f"✅ Found {len(platform_permission_slugs)} platform permissions in registry")
-    
-    # Add all platform permissions to admin role in Casbin
-    logger.info("Adding all platform permissions to admin role...")
-    for perm_slug in platform_permission_slugs:
-        try:
-            obj, act = parse_permission_slug(perm_slug)
-            enforcer.add_policy("admin", org_domain, obj, act)
-        except Exception as e:
-            logger.warning(f"Failed to add permission {perm_slug} to admin role: {e}")
-    
-    # Save all Casbin policies
-    enforcer.save_policy()
-    logger.info(f"✅ Admin role granted {len(platform_permission_slugs)} platform permissions")
-    
-    logger.info("✅ Database initialized successfully")
+            await db.refresh(admin_role)
+            logger.info("✅ Created 'admin' role (platform role)")
+        else:
+            # Ensure admin role is marked as platform role
+            if not admin_role.is_platform_role:
+                admin_role.is_platform_role = True
+                await db.commit()
+                logger.info("✅ Updated 'admin' role to platform role")
+        
+        # Assign admin role to super admin user in Casbin
+        user_id = str(admin_user.id)
+        enforcer.add_grouping_policy(user_id, "admin", org_domain)
+        enforcer.save_policy()  # Save grouping policy immediately
+        logger.info(f"✅ Assigned 'admin' role to super admin user")
+        
+        # Get ALL permissions from the permission registry
+        # Super admin gets ALL permissions (platform, business unit, and user/individual)
+        from app.core.permission_registry import get_platform_permissions, get_bu_permissions, get_user_permissions, get_all_permissions
+        
+        # Get all permission types
+        platform_permission_slugs = get_platform_permissions()
+        bu_permission_slugs = get_bu_permissions()
+        user_permission_slugs = get_user_permissions()
+        all_permissions = get_all_permissions()  # Returns list of PermissionDefinition dicts
+        
+        # Combine all permission slugs and deduplicate to prevent any duplicates
+        all_permission_slugs = list(set(platform_permission_slugs + bu_permission_slugs + user_permission_slugs))
+        
+        logger.info(f"✅ Found {len(all_permissions)} total permissions in registry:")
+        logger.info(f"   - {len(platform_permission_slugs)} platform permissions")
+        logger.info(f"   - {len(bu_permission_slugs)} business unit permissions")
+        logger.info(f"   - {len(user_permission_slugs)} user/individual permissions")
+        logger.info(f"   - {len(all_permission_slugs)} unique permission slugs (after deduplication)")
+        
+        # Add ALL permissions to admin role in Casbin
+        logger.info("Adding all permissions to admin role...")
+        added_count = 0
+        failed_count = 0
+        skipped_count = 0
+        
+        for perm_slug in all_permission_slugs:
+            try:
+                obj, act = parse_permission_slug(perm_slug)
+                # Check if policy already exists to avoid duplicates
+                existing = enforcer.get_filtered_policy(0, "admin", org_domain, obj, act)
+                if not existing:
+                    enforcer.add_policy("admin", org_domain, obj, act)
+                    added_count += 1
+                else:
+                    skipped_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to add permission {perm_slug} to admin role: {e}")
+                failed_count += 1
+        
+        # Save all Casbin policies
+        enforcer.save_policy()
+        logger.info(f"✅ Admin role granted {added_count} new permissions")
+        if skipped_count > 0:
+            logger.info(f"   ({skipped_count} permissions already existed, skipped)")
+        if failed_count > 0:
+            logger.warning(f"⚠️  Failed to add {failed_count} permissions")
+        
+        logger.info("✅ Database initialized successfully")
+    finally:
+        # Always release advisory lock if we acquired it
+        if lock_acquired:
+            try:
+                await db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": LOCK_ID})
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"Could not release advisory lock: {e}")
     logger.info("   - Default organization created")
     logger.info("   - Super admin user created")
     logger.info("   - Admin role created with ALL permissions")
@@ -619,6 +699,57 @@ async def add_active_business_unit_to_users(db: AsyncSession):
         else:
             logger.warning(f"Failed to add active business unit column: {e}")
             await db.rollback()
+
+async def fix_casbin_policy_columns(db: AsyncSession):
+    """
+    Ensure Casbin policies have correct column values.
+    
+    IMPORTANT: The Casbin model expects:
+    - Permission policies (p): 4 fields (v0=sub, v1=dom, v2=obj, v3=act)
+    - Grouping policies (g): 3 fields (v0=user, v1=role, v2=domain)
+    
+    The casbin-sqlalchemy-adapter includes ALL non-NULL columns when loading policies.
+    If v4/v5 are empty strings (instead of NULL), Casbin will load them as 6-field policies,
+    causing "invalid policy size" errors.
+    
+    This function:
+    1. Sets v4, v5 to NULL for all policies (they should never be used)
+    2. Sets v3 to NULL for grouping policies (g) which only use 3 fields
+    3. Handles both NULL and empty string cases
+    """
+    from app.logger import logger
+    
+    try:
+        # Fix permission policies: set v4, v5 to NULL if they are not NULL (includes empty strings)
+        result1 = await db.execute(
+            text("UPDATE casbin_rule SET v4 = NULL, v5 = NULL WHERE v4 IS NOT NULL OR v5 IS NOT NULL")
+        )
+        updated1 = result1.rowcount if hasattr(result1, 'rowcount') else 0
+        
+        # Fix grouping policies: set v3 to NULL if not already NULL (includes empty strings)
+        result2 = await db.execute(
+            text("UPDATE casbin_rule SET v3 = NULL WHERE ptype = 'g' AND v3 IS NOT NULL")
+        )
+        updated2 = result2.rowcount if hasattr(result2, 'rowcount') else 0
+        
+        # Also fix any v3 = '' (empty string) cases explicitly
+        result3 = await db.execute(
+            text("UPDATE casbin_rule SET v3 = NULL WHERE ptype = 'g' AND v3 = ''")
+        )
+        updated3 = result3.rowcount if hasattr(result3, 'rowcount') else 0
+        
+        await db.commit()
+        
+        total_updated = updated1 + updated2 + updated3
+        if total_updated > 0:
+            logger.info(f"✅ Fixed Casbin policy columns: {updated1} policies with v4/v5, {updated2 + updated3} grouping policies with v3")
+        else:
+            logger.info("✅ Casbin policy columns are correct")
+            
+    except Exception as e:
+        logger.warning(f"Failed to fix Casbin policy columns: {e}")
+        await db.rollback()
+
 
 async def create_bu_scoped_rbac_tables(db: AsyncSession):
     """

@@ -21,6 +21,7 @@ class PermissionResponse(PermissionBase):
     environment: Optional[str] = None
     icon: Optional[str] = None
     created_at: Optional[datetime] = None
+    equivalent_slugs: Optional[List[str]] = None  # All permission slugs that map to the same (obj, act) pair
 
     class Config:
         from_attributes = True

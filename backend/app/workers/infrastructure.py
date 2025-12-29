@@ -88,24 +88,39 @@ class InfrastructureProvisionTask:
             job, plugin_id, version, inputs, deployment_id, plugin_version, temp_stack_name, temp_resource_name
         )
         
-        # For updates/rollbacks, preserve existing stack_name and resource name
+        # For updates/rollbacks, preserve existing stack_name
         if is_update and deployment:
             # Use existing stack_name (critical for Pulumi to update the same stack)
             stack_name = deployment.stack_name or temp_stack_name
             self.log_message("INFO", f"Update/rollback detected - using existing stack: {stack_name}")
             
-            # Preserve the existing resource name from current deployment to avoid creating new resources
-            # The resource name (bucket_name/name) must match the existing deployment
+            # Determine resource name from new inputs (user may want to change it)
+            # If user provided a new resource name in inputs, use it; otherwise preserve existing
             existing_inputs = deployment.inputs or {}
-            resource_name_key = "bucket_name" if "bucket_name" in existing_inputs else "name"
+            resource_name_key = "bucket_name" if "bucket_name" in inputs or "bucket_name" in existing_inputs else "name"
             
-            if resource_name_key in existing_inputs:
+            # Log what we received for debugging
+            self.log_message("INFO", f"Update inputs received: {list(inputs.keys()) if inputs else 'empty'}")
+            self.log_message("INFO", f"Existing deployment inputs: {list(existing_inputs.keys()) if existing_inputs else 'empty'}")
+            self.log_message("INFO", f"Resource name key: {resource_name_key}")
+            
+            # Check if user provided a new resource name in the update request
+            if resource_name_key in inputs:
+                # User explicitly provided a resource name - use it (allows renaming)
+                resource_name = inputs[resource_name_key]
+                existing_resource_name = existing_inputs.get(resource_name_key)
+                if existing_resource_name and resource_name != existing_resource_name:
+                    self.log_message("INFO", f"Resource name change detected: '{existing_resource_name}' -> '{resource_name}' (key: {resource_name_key})")
+                else:
+                    self.log_message("INFO", f"Using resource name '{resource_name}' from update request (key: {resource_name_key})")
+            elif resource_name_key in existing_inputs:
+                # No new resource name provided - preserve existing to avoid creating new resources
                 existing_resource_name = existing_inputs[resource_name_key]
                 resource_name = existing_resource_name
                 # Update inputs to use existing resource name - this ensures Pulumi updates the same resource
                 inputs = inputs.copy()
                 inputs[resource_name_key] = existing_resource_name
-                self.log_message("INFO", f"Preserving existing resource name '{resource_name}' for update/rollback (key: {resource_name_key})")
+                self.log_message("INFO", f"Preserving existing resource name '{resource_name}' for update (key: {resource_name_key})")
             else:
                 # Fallback to deployment name if no resource name in inputs
                 resource_name = deployment.name or temp_resource_name

@@ -1,6 +1,5 @@
 -- DevPlatform IDP Database Schema
 -- This schema creates all required tables for the application
--- Note: Casbin tables (casbin_rule) are created automatically by the casbin-sqlalchemy-adapter
 
 -- Create database
 CREATE DATABASE devplatform_idp;
@@ -10,6 +9,33 @@ CREATE DATABASE devplatform_idp;
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- ============================================================================
+-- Casbin Rule Table
+-- ============================================================================
+-- NOTE: The casbin-sqlalchemy-adapter creates this table automatically, but we define it
+-- here to ensure correct column defaults. The adapter reads v0-v5, but v4 and v5 should
+-- be NULL (not empty strings) to avoid "invalid policy size" errors in Casbin.
+-- 
+-- Policy format: p = sub, dom, obj, act (4 fields: v0, v1, v2, v3)
+-- Grouping format: g = user, role, domain (3 fields: v0, v1, v2)
+-- v4 and v5 must remain NULL (not empty strings) for proper Casbin operation.
+
+CREATE TABLE IF NOT EXISTS casbin_rule (
+    id SERIAL PRIMARY KEY,
+    ptype VARCHAR(255) NOT NULL DEFAULT '',
+    v0 VARCHAR(255) NOT NULL DEFAULT '',
+    v1 VARCHAR(255) NOT NULL DEFAULT '',
+    v2 VARCHAR(255) NOT NULL DEFAULT '',
+    v3 VARCHAR(255) DEFAULT NULL,  -- NULL by default, not empty string
+    v4 VARCHAR(255) DEFAULT NULL,  -- NULL by default, not empty string
+    v5 VARCHAR(255) DEFAULT NULL   -- NULL by default, not empty string
+);
+
+-- Index for faster policy lookups
+CREATE INDEX IF NOT EXISTS idx_casbin_rule_ptype ON casbin_rule(ptype);
+CREATE INDEX IF NOT EXISTS idx_casbin_rule_v0 ON casbin_rule(v0);
+CREATE INDEX IF NOT EXISTS idx_casbin_rule_v1 ON casbin_rule(v1);
 
 -- ============================================================================
 -- RBAC Tables
@@ -180,15 +206,28 @@ CREATE TABLE business_units (
 
 -- Business unit members table (many-to-many relationship)
 -- Note: Uses role_id foreign key to roles table instead of enum
+-- role_id is nullable to allow adding members without roles initially
+-- Multiple roles per user per BU are allowed (unique constraint on business_unit_id, user_id, role_id)
 CREATE TABLE business_unit_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     business_unit_id UUID REFERENCES business_units(id) ON DELETE CASCADE NOT NULL,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
-    role_id UUID REFERENCES roles(id) ON DELETE RESTRICT NOT NULL,
+    role_id UUID REFERENCES roles(id) ON DELETE RESTRICT,  -- NULLABLE: allows members without roles
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(business_unit_id, user_id)
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Unique constraint for non-NULL role_id: allows multiple roles per user per BU
+-- A user can have multiple specific roles in the same BU
+CREATE UNIQUE INDEX uix_business_unit_member_role_not_null
+ON business_unit_members (business_unit_id, user_id, role_id)
+WHERE role_id IS NOT NULL;
+
+-- Unique constraint for NULL role_id: one entry per user per BU without a role
+-- A user can only be added once to a BU without a specific role
+CREATE UNIQUE INDEX uix_business_unit_member_no_role
+ON business_unit_members (business_unit_id, user_id)
+WHERE role_id IS NULL;
 
 -- Business unit groups table (for managing groups within a business unit)
 CREATE TABLE business_unit_groups (
@@ -490,8 +529,11 @@ CREATE INDEX idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC)
 -- Migration from enum to role_id is handled automatically by migrations/add_bu_scoped_rbac.sql
 -- which is executed during application startup via app/core/db_init.py
 
--- Casbin RBAC tables (casbin_rule) are automatically created by casbin-sqlalchemy-adapter
--- when the application starts. No manual creation needed.
+-- Casbin RBAC tables (casbin_rule) are defined at the top of this schema.
+-- IMPORTANT: v4, v5, and v3 (for grouping policies) must be NULL, not empty strings.
+-- The casbin-sqlalchemy-adapter includes all non-NULL columns when loading policies.
+-- If v4/v5 are empty strings, Casbin will see 6-field policies instead of 4-field,
+-- causing "invalid policy size" errors.
 
 -- Environment-based permissions are automatically created during database initialization
 -- (see app/core/db_init.py). The permission model is:

@@ -6,6 +6,7 @@ It creates BU-scoped role assignments and permission policies.
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from typing import Optional
 import uuid
 from casbin import Enforcer
@@ -24,173 +25,80 @@ async def create_default_bu_role_permissions(
     enforcer: Enforcer
 ):
     """
-    Assign appropriate permissions to a default role in a business unit context.
+    Create BU-scoped permissions for a role based on the permissions assigned to that role.
+    
+    This function:
+    1. Gets the actual permissions assigned to the role from Casbin (not from templates)
+    2. Filters for BU-scoped permissions (those starting with "business_unit:")
+    3. Creates BU-scoped versions of those permissions (with "bu:{bu_id}:" prefix)
+    
+    This allows admins to create roles with any name and assign any permissions,
+    and those permissions will be correctly applied when the role is used in a BU.
     
     Args:
-        role_name: Name of the role (e.g., "bu-owner", "developer", "viewer")
+        role_name: Name of the role (can be any name, e.g., "BU Owners", "Business Unit Manager", etc.)
         business_unit_id: UUID of the business unit
         org_domain: Organization domain
         enforcer: Casbin enforcer
     """
-    # Get BU-scoped permissions (list of permission slugs)
-    bu_permission_slugs = get_bu_permissions()
+    logger.info(f"[create_default_bu_role_permissions] Creating BU permissions for role '{role_name}' in BU {business_unit_id}")
     
-    # Get full permission definitions for wildcard expansion
-    from app.core.permission_registry import PERMISSIONS_BY_SLUG
-    bu_permissions = [PERMISSIONS_BY_SLUG[slug] for slug in bu_permission_slugs if slug in PERMISSIONS_BY_SLUG]
+    # Get BU-scoped permission slugs for validation
+    bu_perm_slugs = set(get_bu_permissions())
     
-    # Role templates using new scope-prefixed permission format
-    # These templates define permission patterns for common roles
-    ROLE_TEMPLATES = {
-        "bu-owner": {
-            "permission_patterns": [
-                "business_unit:*",  # All business unit permissions
-            ],
-            "description": "Full access to all business unit resources"
-        },
-        "bu-admin": {
-            "permission_patterns": [
-                "business_unit:deployments:create:development",
-                "business_unit:deployments:create:staging",
-                "business_unit:deployments:update:development",
-                "business_unit:deployments:update:staging",
-                "business_unit:deployments:delete:development",
-                "business_unit:deployments:delete:staging",
-                "business_unit:deployments:read",
-                "business_unit:deployments:list",
-                "business_unit:business_units:read",
-                "business_unit:business_units:update",
-                "business_unit:business_units:manage_members",
-            ],
-            "description": "Manage deployments and BU resources"
-        },
-        "developer": {
-            "permission_patterns": [
-                "business_unit:deployments:create:development",
-                "business_unit:deployments:update:development",
-                "business_unit:deployments:delete:development",
-                "business_unit:deployments:read",
-                "business_unit:deployments:list",
-                "business_unit:plugins:provision",
-            ],
-            "description": "Deploy and manage in development environment"
-        },
-        "engineer": {
-            "permission_patterns": [
-                "business_unit:deployments:create:development",
-                "business_unit:deployments:update:development",
-                "business_unit:deployments:delete:development",
-                "business_unit:deployments:read",
-                "business_unit:deployments:list",
-                "business_unit:plugins:provision",
-            ],
-            "description": "Deploy and manage in development environment"
-        },
-        "senior-engineer": {
-            "permission_patterns": [
-                "business_unit:deployments:create:development",
-                "business_unit:deployments:update:development",
-                "business_unit:deployments:delete:development",
-                "business_unit:deployments:create:staging",
-                "business_unit:deployments:update:staging",
-                "business_unit:deployments:delete:staging",
-                "business_unit:deployments:read",
-                "business_unit:deployments:list",
-                "business_unit:plugins:provision",
-            ],
-            "description": "Deploy in development and staging environments"
-        },
-        "viewer": {
-            "permission_patterns": [
-                "business_unit:deployments:read",
-                "business_unit:deployments:list",
-                "business_unit:business_units:read",
-            ],
-            "description": "Read-only access to business unit resources"
-        },
-    }
-    
-    # Get permissions for role from template
-    role_permissions = {}
-    for role_name, template in ROLE_TEMPLATES.items():
-        permission_slugs = []
-        for pattern in template["permission_patterns"]:
-            if pattern.endswith(":*"):
-                # Expand wildcard - get all permissions starting with the prefix
-                prefix = pattern[:-2]  # Remove ":*"
-                matching_perms = [p["slug"] for p in bu_permissions if p["slug"].startswith(prefix + ":")]
-                permission_slugs.extend(matching_perms)
-            else:
-                permission_slugs.append(pattern)
-        role_permissions[role_name] = permission_slugs
-    
-    # Normalize role name (lowercase, strip spaces, handle variations)
-    role_name_normalized = role_name.lower().strip()
-    # Handle common variations
-    role_name_variations = {
-        "infrastructure engineer": "engineer",
-        "infrastructure engineers": "engineer",
-        "infrastructure-engineer": "engineer",
-        "infrastructure_engineer": "engineer",
-        "senior infrastructure engineer": "senior-engineer",
-        "senior infrastructure engineers": "senior-engineer",
-    }
-    normalized_name = role_name_variations.get(role_name_normalized, role_name_normalized)
-    
-    # Get permissions for this role
-    permission_slugs = role_permissions.get(normalized_name, [])
-    
-    # If role not found in default mapping, try to get permissions from Casbin (global scope)
-    if not permission_slugs:
-        # Try case-insensitive matching first
-        for default_role, perms in role_permissions.items():
-            if default_role.lower() == normalized_name:
-                permission_slugs = perms
-                logger.info(f"Matched role '{role_name}' (normalized: '{normalized_name}') to default role '{default_role}'")
-                break
+    # Get all policies for this role in the org domain (global scope)
+    # These are the permissions that were assigned to the role when it was created/updated
+    # Handle different enforcer types
+    try:
+        # Navigate to base enforcer if needed
+        base_enforcer = enforcer
+        if hasattr(enforcer, '_enforcer'):
+            # It's an OrgAwareEnforcer, get the underlying enforcer
+            base_enforcer = enforcer._enforcer
+        if hasattr(base_enforcer, 'enforcer'):
+            # It's a MultiTenantEnforcerWrapper, get the base Casbin enforcer
+            base_enforcer = base_enforcer.enforcer
         
-        # If still not found, try to get permissions from Casbin for this role
-        if not permission_slugs:
-            try:
-                # Get all policies for this role in the org domain (global scope)
-                all_policies = enforcer.get_filtered_policy(0, role_name, org_domain)
-                # Extract unique (obj, act) pairs
-                global_permissions = set()
-                bu_perm_slugs = set(get_bu_permissions())  # Get list of BU-scoped permission slugs
-                
-                for policy in all_policies:
-                    if len(policy) >= 4:
-                        # Format: [role, domain, obj, act, ...]
-                        policy_obj = policy[2]
-                        policy_act = policy[3]
-                        # Check if this permission is BU-scoped
-                        perm_slug = f"{policy_obj}:{policy_act}"
-                        if perm_slug in bu_perm_slugs:
-                            global_permissions.add(perm_slug)
-                
-                if global_permissions:
-                    permission_slugs = list(global_permissions)
-                    logger.info(f"Found {len(permission_slugs)} BU-scoped permissions for role '{role_name}' from Casbin: {permission_slugs}")
-                else:
-                    logger.warning(f"No BU-scoped permissions found for role '{role_name}' in Casbin. Using default 'developer' permissions as fallback.")
-                    # Fallback to developer permissions if nothing found
-                    permission_slugs = role_permissions.get("developer", [])
-            except Exception as e:
-                logger.warning(f"Failed to get permissions from Casbin for role '{role_name}': {e}. Using default 'developer' permissions.")
-                permission_slugs = role_permissions.get("developer", [])
+        # Get policies from base enforcer
+        all_policies = base_enforcer.get_filtered_policy(0, role_name, org_domain)
+        logger.info(f"[create_default_bu_role_permissions] Found {len(all_policies)} total policies for role '{role_name}' in org domain '{org_domain}'")
+    except Exception as e:
+        logger.error(f"[create_default_bu_role_permissions] Failed to get policies for role '{role_name}': {e}", exc_info=True)
+        all_policies = []
     
-    # Permissions are already expanded from templates, but handle any remaining wildcards
-    expanded_permissions = []
-    for perm_slug in permission_slugs:
-        if perm_slug.endswith(":*"):
-            # Expand wildcard - get all permissions starting with the prefix
-            prefix = perm_slug[:-2]  # Remove ":*"
-            matching_perms = [p["slug"] for p in bu_permissions if p["slug"].startswith(prefix + ":")]
-            expanded_permissions.extend(matching_perms)
-        else:
-            expanded_permissions.append(perm_slug)
+    # Extract BU-scoped permissions from the role's policies
+    # Format: [role, domain, obj, act, ...]
+    # obj includes scope (e.g., "business_unit:deployments")
+    bu_permission_slugs = []
+    for policy in all_policies:
+        if len(policy) >= 4:
+            policy_obj = policy[2]  # e.g., "business_unit:deployments"
+            policy_act = policy[3]   # e.g., "list" or "create:development"
+            
+            # Check if this is a BU-scoped permission
+            # BU-scoped permissions have obj starting with "business_unit:"
+            if policy_obj.startswith("business_unit:"):
+                # Reconstruct the full permission slug
+                perm_slug = f"{policy_obj}:{policy_act}"
+                if perm_slug in bu_perm_slugs:
+                    bu_permission_slugs.append(perm_slug)
+                    logger.debug(f"[create_default_bu_role_permissions] Found BU permission: {perm_slug}")
+    
+    logger.info(f"[create_default_bu_role_permissions] Found {len(bu_permission_slugs)} BU-scoped permissions for role '{role_name}' from Casbin")
+    
+    # If no BU permissions found, log a warning but don't create any permissions
+    # The role might not have BU permissions assigned, which is valid
+    if not bu_permission_slugs:
+        logger.warning(f"[create_default_bu_role_permissions] Role '{role_name}' has no BU-scoped permissions assigned. No BU permissions will be created. "
+                     f"Admin should assign BU permissions to this role on the Roles page if it should be used in Business Units.")
+        return
+    
+    # Use the actual permissions assigned to the role
+    expanded_permissions = bu_permission_slugs
     
     # Add permissions to Casbin with BU context
+    permissions_added = 0
+    logger.info(f"[create_default_bu_role_permissions] Creating BU-scoped versions of {len(expanded_permissions)} permissions for role '{role_name}' in BU {business_unit_id}")
     for perm_slug in expanded_permissions:
         try:
             obj, act = parse_permission_slug(perm_slug)
@@ -198,12 +106,32 @@ async def create_default_bu_role_permissions(
             bu_obj = f"bu:{business_unit_id}:{obj}"
             
             # Check if policy already exists
-            existing = enforcer.get_filtered_policy(0, role_name, org_domain, bu_obj, act)
+            # Navigate to base enforcer for policy operations
+            base_enforcer = enforcer
+            if hasattr(enforcer, '_enforcer'):
+                base_enforcer = enforcer._enforcer
+            if hasattr(base_enforcer, 'enforcer'):
+                base_enforcer = base_enforcer.enforcer
+            
+            # Check if policy already exists
+            existing = base_enforcer.get_filtered_policy(0, role_name, org_domain, bu_obj, act)
+            
             if not existing:
-                enforcer.add_policy(role_name, org_domain, bu_obj, act)
-                logger.info(f"Added BU permission: {role_name} -> {bu_obj}:{act} for permission {perm_slug}")
+                # Add policy to base enforcer
+                base_enforcer.add_policy(role_name, org_domain, bu_obj, act)
+                permissions_added += 1
+                logger.debug(f"Added BU permission: {role_name} -> {bu_obj}:{act} for permission {perm_slug}")
+            else:
+                logger.debug(f"Permission already exists: {role_name} -> {bu_obj}:{act}")
         except Exception as e:
-            logger.warning(f"Failed to add permission {perm_slug} for role {role_name} in BU {business_unit_id}: {e}")
+            logger.error(f"Failed to add permission {perm_slug} for role {role_name} in BU {business_unit_id}: {e}", exc_info=True)
+    
+    logger.info(f"[create_default_bu_role_permissions] Created {permissions_added} new BU-scoped permissions for role '{role_name}' in BU {business_unit_id}")
+    
+    if permissions_added > 0:
+        logger.info(f"Created {permissions_added} BU-scoped permissions for role '{role_name}' in BU {business_unit_id}")
+    else:
+        logger.warning(f"No permissions were created for role '{role_name}' in BU {business_unit_id}. Expanded permissions: {expanded_permissions[:5]}...")
 
 
 async def migrate_to_bu_scoped_policies(
@@ -284,6 +212,18 @@ async def migrate_to_bu_scoped_policies(
                 enforcer.add_grouping_policy(user_id, composite_role, org_domain)
                 total_members += 1
                 logger.debug(f"Added BU role assignment: {user_id} -> {composite_role} in {org_domain}")
+            
+            # IMPORTANT: Add role hierarchy so composite role inherits from base role
+            # This allows Casbin to match permissions stored for the base role
+            existing_hierarchy = enforcer.get_filtered_grouping_policy(0, composite_role)
+            has_role_hierarchy = any(
+                len(p) >= 3 and p[1] == role.name and p[2] == org_domain
+                for p in existing_hierarchy
+            )
+            
+            if not has_role_hierarchy:
+                enforcer.add_grouping_policy(composite_role, role.name, org_domain)
+                logger.debug(f"Added role hierarchy: {composite_role} -> {role.name} in {org_domain}")
             
             # Create BU-scoped permission policies for this role
             # Only create once per role per BU (not per member)

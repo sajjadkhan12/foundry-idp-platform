@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Union
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Union, List
 from datetime import datetime
 import uuid
 
@@ -30,8 +30,45 @@ class BusinessUnitResponse(BusinessUnitBase):
 
 class BusinessUnitMemberAdd(BaseModel):
     user_email: str = Field(..., description="Email of user to add")
-    role_id: Optional[Union[uuid.UUID, str]] = Field(None, description="Role ID (UUID or string UUID)")
+    role_ids: Optional[List[Union[uuid.UUID, str]]] = Field(None, description="List of Role IDs (UUIDs or string UUIDs)")
+    role_id: Optional[Union[uuid.UUID, str]] = Field(None, description="Single Role ID (for backward compatibility)")
     role: Optional[str] = Field(None, description="Role name (for backward compatibility: 'owner' -> 'bu-owner', 'member' -> 'viewer')")
+    
+    @field_validator('role_ids', mode='before')
+    @classmethod
+    def validate_role_ids(cls, v):
+        """Convert list of string UUIDs to UUID objects"""
+        if v is None:
+            return None
+        if isinstance(v, list):
+            result = []
+            for item in v:
+                if isinstance(item, uuid.UUID):
+                    result.append(item)
+                elif isinstance(item, str) and item.strip():
+                    try:
+                        result.append(uuid.UUID(item))
+                    except (ValueError, TypeError):
+                        pass
+            return result if result else None
+        return None
+    
+    @model_validator(mode='after')
+    def validate_role_input(self):
+        """Ensure either role_ids or role_id/role is provided"""
+        # If role_ids is provided and not empty, use it
+        if self.role_ids and len(self.role_ids) > 0:
+            return self
+        # Otherwise, convert role_id to role_ids for backward compatibility
+        if self.role_id:
+            self.role_ids = [self.role_id]
+        elif self.role:
+            # For backward compatibility with role name, we'll handle this in the endpoint
+            self.role_ids = []
+        else:
+            # No roles provided
+            self.role_ids = []
+        return self
     
     @field_validator('role_id', mode='before')
     @classmethod

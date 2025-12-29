@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.rbac import User, Organization
 from app.config import settings
 from app.core.organization import get_user_organization, get_organization_domain
+from app.logger import logger
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
@@ -54,24 +55,122 @@ from casbin import Enforcer
 async def is_platform_admin(user: User, db: AsyncSession, enforcer: Enforcer) -> bool:
     """
     Check if user has platform admin permissions (any platform:* permission).
-    This replaces hardcoded role name checks.
+    This checks permissions directly through all user roles (including group-inherited),
+    not just platform roles, to handle cases where admin roles might not be marked as platform roles.
     """
-    from app.core.authorization import check_platform_permission
+    from app.core.authorization import check_permission, get_user_platform_roles, parse_permission_slug
+    from app.core.organization import get_user_organization, get_organization_domain
     
-    # Check if user has any key platform permission (indicates platform admin access)
-    # We check a few key platform permissions to determine admin status
+    # Get org domain
+    org = await get_user_organization(user, db)
+    org_domain = get_organization_domain(org)
+    
+    # Ensure enforcer has org_domain set if it's a wrapper
+    if hasattr(enforcer, 'set_org_domain') and (not hasattr(enforcer, '_org_domain') or not enforcer._org_domain):
+        enforcer.set_org_domain(org_domain)
+    
+    # Check if enforcer is OrgAwareEnforcer (only takes 3 args) or base enforcer (takes 4 args)
+    is_org_aware = hasattr(enforcer, '_org_domain') and hasattr(enforcer, '_enforcer')
+    
+    # Check if user has ADMIN-ONLY platform permissions (not just any platform permission)
+    # Note: platform:users:list and platform:roles:list are also given to BU owners,
+    # so we need to check for permissions that are ONLY given to platform admins
     key_admin_permissions = [
-        "platform:users:list",
-        "platform:roles:list", 
-        "platform:business_units:create",
-        "platform:organizations:list"
+        "platform:business_units:create",   # Only admins can create BUs
+        "platform:business_units:delete",   # Only admins can delete BUs
+        "platform:roles:create",            # Only admins can create roles
+        "platform:users:create",            # Only admins can create users
+        "platform:organizations:update",    # Only admins can update org settings
     ]
     
-    # Try key permissions first for efficiency
-    for perm in key_admin_permissions:
-        if await check_platform_permission(user, perm, db, enforcer):
-            return True
+    # Get ALL user roles (including through group membership) - not just platform roles
+    # This is important because admin roles might not be marked as platform roles
+    user_id = str(user.id)
+    all_user_roles = []
     
+    try:
+        if is_org_aware:
+            # OrgAwareEnforcer: get all roles including group-inherited
+            all_user_roles = enforcer.get_roles_for_user(user_id)
+        else:
+            # Base enforcer: get all roles including group-inherited
+            all_user_roles = enforcer.get_roles_for_user(user_id, org_domain)
+    except Exception as e:
+        logger.warning(f"Failed to get roles for user {user_id}: {e}")
+        # Fallback: try get_implicit_roles_for_user which includes group inheritance
+        try:
+            if hasattr(enforcer, '_enforcer'):
+                base_enforcer = enforcer._enforcer
+            else:
+                base_enforcer = enforcer
+            implicit_roles = base_enforcer.get_implicit_roles_for_user(user_id, org_domain)
+            for role_info in implicit_roles:
+                if isinstance(role_info, (list, tuple)) and len(role_info) > 0:
+                    all_user_roles.append(role_info[0])
+                else:
+                    all_user_roles.append(role_info)
+            all_user_roles = list(set(all_user_roles))
+        except Exception as e2:
+            logger.warning(f"Failed to get implicit roles for user {user_id}: {e2}")
+    
+    logger.debug(f"User {user.id} all roles (including group-inherited): {all_user_roles}")
+    
+    # Filter to only actual role names (not group names)
+    # Only check permissions for roles that exist in the database
+    from app.models.rbac import Role
+    from sqlalchemy import select
+    role_result = await db.execute(select(Role.name))
+    valid_role_names = {role_name for role_name in role_result.scalars().all()}
+    
+    # Filter all_user_roles to only include valid role names
+    valid_roles = [role for role in all_user_roles if role in valid_role_names]
+    logger.debug(f"User {user.id} valid roles (filtered from groups): {valid_roles}")
+    
+    # Also get platform roles for logging
+    platform_roles = await get_user_platform_roles(user, db, enforcer, org_domain)
+    logger.debug(f"User {user.id} platform roles: {platform_roles}")
+    
+    # Fallback: Directly check if user has "admin" role assigned
+    has_admin_role = False
+    if is_org_aware:
+        has_admin_role = enforcer.has_grouping_policy(user_id, "admin")
+    else:
+        has_admin_role = enforcer.has_grouping_policy(user_id, "admin", org_domain)
+    
+    if has_admin_role and "admin" not in valid_roles:
+        logger.debug(f"User {user.id} has admin role assigned directly, adding to roles")
+        valid_roles.append("admin")
+    
+    if not valid_roles:
+        logger.debug(f"User {user.id} has no valid roles, cannot be platform admin")
+        return False
+    
+    # Check each key permission directly using the enforcer through VALID user roles only
+    # This way it works even if the role isn't marked as is_platform_role
+    for perm in key_admin_permissions:
+        try:
+            obj, act = parse_permission_slug(perm)
+            logger.debug(f"Checking permission '{perm}' -> obj='{obj}', act='{act}' for roles {valid_roles}")
+            for role in valid_roles:
+                if is_org_aware:
+                    # OrgAwareEnforcer: (role, obj, act) - org_domain is injected automatically
+                    result = enforcer.enforce(role, obj, act)
+                    logger.debug(f"  Role '{role}' with OrgAwareEnforcer: {result}")
+                    if result:
+                        logger.debug(f"User {user.id} is platform admin (has permission '{perm}' via role '{role}')")
+                        return True
+                else:
+                    # Base enforcer: (role, org_domain, obj, act)
+                    result = enforcer.enforce(role, org_domain, obj, act)
+                    logger.debug(f"  Role '{role}' with base enforcer: {result}")
+                    if result:
+                        logger.debug(f"User {user.id} is platform admin (has permission '{perm}' via role '{role}')")
+                        return True
+        except ValueError as e:
+            logger.warning(f"Error parsing permission '{perm}': {e}")
+            continue
+    
+    #logger.warning(f"User {user.id} is NOT platform admin (no key permissions found in roles: {valid_roles})")
     return False
 
 
@@ -135,6 +234,16 @@ def is_allowed(permission_slug: str):
         if hasattr(enforcer, 'set_org_domain') and (not hasattr(enforcer, '_org_domain') or not enforcer._org_domain):
             enforcer.set_org_domain(org_domain)
         
+        # Check if user is platform admin first (admins bypass permission checks)
+        logger.debug(f"Checking permission '{permission_slug}' for user {current_user.id} ({current_user.email})")
+        is_admin = await is_platform_admin(current_user, db, enforcer)
+        logger.debug(f"User {current_user.id} is_platform_admin: {is_admin}")
+        
+        if is_admin:
+            # Platform admins have access to all platform endpoints
+            logger.debug(f"User {current_user.id} is platform admin, allowing access")
+            return current_user
+        
         # Use the unified check_permission function which handles all scopes
         has_permission = await check_permission(
             current_user,
@@ -192,7 +301,8 @@ async def get_bu_membership(
 ):
     """
     Get user's membership in a specific business unit with role.
-    Returns BusinessUnitMember if user is a member, None otherwise.
+    Returns first BusinessUnitMember if user is a member, None otherwise.
+    Note: A user can have multiple roles in a BU, so we return the first one.
     """
     from app.models.business_unit import BusinessUnitMember
     
@@ -203,6 +313,7 @@ async def get_bu_membership(
             BusinessUnitMember.user_id == user_id,
             BusinessUnitMember.business_unit_id == business_unit_id
         )
+        .limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -261,7 +372,10 @@ async def check_bu_permission(
     membership = await get_bu_membership(user.id, business_unit_id, db)
     if not membership or not membership.role:
         # User is not a member of business unit
+        logger.debug(f"[DEBUG check_bu_permission] User {user.email} is not a member of BU {business_unit_id} or has no role")
         return False
+    
+    logger.info(f"[DEBUG check_bu_permission] User {user.email} has membership in BU {business_unit_id} with role: {membership.role.name}")
     
     # Parse permission slug
     try:
@@ -270,15 +384,52 @@ async def check_bu_permission(
         logger.error(f"Failed to parse permission slug '{permission_slug}': {e}")
         return False
     
+    # Reload policies to ensure we have the latest BU-scoped permissions
+    base_enforcer = enforcer
+    if hasattr(enforcer, 'enforcer'):
+        base_enforcer = enforcer.enforcer
+    if hasattr(base_enforcer, 'load_policy'):
+        base_enforcer.load_policy()
+    
     # Check permission for this role in BU context
     # Format: (role, org_domain, bu:{bu_id}:resource, action)
     bu_obj = f"bu:{business_unit_id}:{obj}"
-    has_permission = enforcer.enforce(membership.role.name, org_domain, bu_obj, act)
+    
+    logger.info(f"[DEBUG check_bu_permission] Checking permission: role={membership.role.name}, bu_obj={bu_obj}, act={act}, org_domain={org_domain}")
+    
+    # Handle different enforcer types
+    # OrgAwareEnforcer.enforce() expects 3 args: (sub, obj, act) and injects org_domain automatically
+    # MultiTenantEnforcerWrapper.enforce() accepts either:
+    # - 2 args: (sub, obj, act) - injects org_domain automatically
+    # - 3 args: (sub, dom, obj, act) - uses provided domain
+    # Base Casbin enforcer expects 4 args: (sub, dom, obj, act)
+    if hasattr(enforcer, '_enforcer') and hasattr(enforcer, '_org_domain'):
+        # It's an OrgAwareEnforcer: use 3-arg format (sub, obj, act), org_domain is injected automatically
+        has_permission = enforcer.enforce(membership.role.name, bu_obj, act)
+        logger.info(f"[DEBUG check_bu_permission] OrgAwareEnforcer result: {has_permission}")
+    elif hasattr(enforcer, '_org_domain') and hasattr(enforcer, 'enforcer'):
+        # MultiTenantEnforcerWrapper: use 3-arg format (sub, dom, obj, act)
+        has_permission = enforcer.enforce(membership.role.name, org_domain, bu_obj, act)
+        logger.info(f"[DEBUG check_bu_permission] MultiTenantEnforcerWrapper result: {has_permission}")
+    else:
+        # Base Casbin enforcer: expects (sub, dom, obj, act)
+        has_permission = enforcer.enforce(membership.role.name, org_domain, bu_obj, act)
+        logger.info(f"[DEBUG check_bu_permission] Base enforcer result: {has_permission}")
     # Permission check completed
     
     # If not found, check global permission and create BU-scoped version if it exists
     if not has_permission:
-        global_has_permission = enforcer.enforce(membership.role.name, org_domain, obj, act)
+        logger.info(f"[DEBUG check_bu_permission] BU-scoped permission not found, checking global permission: role={membership.role.name}, obj={obj}, act={act}")
+        if hasattr(enforcer, '_enforcer') and hasattr(enforcer, '_org_domain'):
+            # OrgAwareEnforcer: use 3-arg format
+            global_has_permission = enforcer.enforce(membership.role.name, obj, act)
+        elif hasattr(enforcer, '_org_domain') and hasattr(enforcer, 'enforcer'):
+            # MultiTenantEnforcerWrapper: use 3-arg format
+            global_has_permission = enforcer.enforce(membership.role.name, org_domain, obj, act)
+        else:
+            # Base Casbin enforcer: use 4-arg format
+            global_has_permission = enforcer.enforce(membership.role.name, org_domain, obj, act)
+        logger.info(f"[DEBUG check_bu_permission] Global permission check result: {global_has_permission}")
         # Global permission check completed
         
         if global_has_permission:
@@ -391,13 +542,36 @@ def is_allowed_bu(permission_slug: str, require_bu: bool = True):
                     detail="Not a member of this business unit"
                 )
             
+            # Ensure role relationship is loaded (refresh to avoid lazy loading issues)
+            if membership.role_id:
+                await db.refresh(membership, ["role"])
+                # If role is still None after refresh, try to load it directly
+                if not membership.role:
+                    from sqlalchemy.future import select
+                    from app.models.rbac import Role
+                    role_result = await db.execute(
+                        select(Role).where(Role.id == membership.role_id)
+                    )
+                    role_obj = role_result.scalar_one_or_none()
+                    if role_obj:
+                        # Manually set the role on the membership object
+                        membership.role = role_obj
+            
             # Get user's role in this BU
             role = membership.role
             if not role:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Role not found for business unit membership"
-                )
+                # Role might have been deleted or is orphaned
+                # Check if role_id exists but role object is None
+                if membership.role_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Role not found for business unit membership. Role ID {membership.role_id} does not exist in the roles table."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You do not have a role assigned in this business unit. Please contact a business unit administrator."
+                    )
             
             from app.logger import logger
             logger.info(f"Checking permission '{permission_slug}' for user {current_user.email} with role '{role.name}' in BU {business_unit_id}")
@@ -554,10 +728,24 @@ class OrgAwareEnforcer:
     def __init__(self, enforcer, org_domain: str):
         self._enforcer = enforcer
         self._org_domain = org_domain
+        # If the underlying enforcer is a MultiTenantEnforcerWrapper, set its org_domain
+        if hasattr(enforcer, 'set_org_domain'):
+            enforcer.set_org_domain(org_domain)
     
     def enforce(self, user_id: str, resource: str, action: str) -> bool:
         """3-param enforce that automatically adds org_domain"""
-        return self._enforcer.enforce(user_id, self._org_domain, resource, action)
+        # MultiTenantEnforcerWrapper expects (sub, obj, act) and injects org_domain itself
+        # So we pass (user_id, resource, action) and it will add org_domain
+        if hasattr(self._enforcer, '_org_domain'):
+            # It's a MultiTenantEnforcerWrapper - use 3-param format (sub, obj, act)
+            # The wrapper will inject org_domain automatically
+            return self._enforcer.enforce(user_id, resource, action)
+        elif hasattr(self._enforcer, 'enforce'):
+            # It's a base Casbin enforcer - use 4-param format (sub, dom, obj, act)
+            return self._enforcer.enforce(user_id, self._org_domain, resource, action)
+        else:
+            # Fallback - try direct call
+            return self._enforcer.enforce(user_id, self._org_domain, resource, action)
     
     def has_grouping_policy(self, user_id: str, role: str) -> bool:
         """2-param has_grouping_policy that automatically adds org_domain"""
@@ -641,7 +829,38 @@ class OrgAwareEnforcer:
     
     def delete_roles_for_user(self, user_id: str) -> bool:
         """Delete all roles for user within the organization domain"""
-        return self._enforcer.delete_roles_for_user(user_id, self._org_domain)
+        try:
+            # Access the base enforcer (unwrap if necessary)
+            base_enforcer = self._enforcer
+            if hasattr(self._enforcer, 'enforcer'):
+                base_enforcer = self._enforcer.enforcer
+            
+            # Get all grouping policies for this user
+            grouping_policies = base_enforcer.get_filtered_grouping_policy(0, user_id)
+            removed = False
+            
+            # Remove all grouping policies for this user in this organization domain
+            for policy in grouping_policies:
+                # Format: [user_id, role, domain] or [user_id, role]
+                if len(policy) >= 3:
+                    # Multi-tenant format: check if domain matches
+                    if policy[2] == self._org_domain:
+                        base_enforcer.remove_grouping_policy(*policy)
+                        removed = True
+                elif len(policy) == 2:
+                    # Old format: remove it (will be re-added with domain if needed)
+                    base_enforcer.remove_grouping_policy(*policy)
+                    removed = True
+            
+            # Save the policy changes
+            if removed:
+                base_enforcer.save_policy()
+            
+            return removed
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to delete roles for user {user_id}: {e}")
+            return False
     
     def delete_role(self, role: str) -> bool:
         """Delete a role within the organization domain"""
@@ -796,13 +1015,15 @@ async def get_active_business_unit(
         return None
     
     # Validate user has access to this business unit
+    # A user can have multiple roles in a BU, so we get all memberships
     result = await db.execute(
         select(BusinessUnitMember).where(
             BusinessUnitMember.business_unit_id == business_unit_uuid,
             BusinessUnitMember.user_id == current_user.id
         )
     )
-    membership = result.scalar_one_or_none()
+    memberships = result.scalars().all()
+    membership = memberships[0] if memberships else None
     
     if not membership:
         # Check if user is super admin (they can access all business units)

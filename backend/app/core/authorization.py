@@ -82,14 +82,20 @@ async def get_user_platform_roles(
                 user_roles = []
     
     # Filter to only platform roles
+    from app.logger import logger
+    logger.debug(f"User {user.id} has roles from enforcer: {user_roles}")
+    
     if not user_roles:
+        logger.debug(f"User {user.id} has no roles from enforcer")
         return []
     
     result = await db.execute(
         select(Role).where(Role.name.in_(user_roles), Role.is_platform_role == True)
     )
     platform_roles = result.scalars().all()
-    return [r.name for r in platform_roles]
+    platform_role_names = [r.name for r in platform_roles]
+    logger.debug(f"User {user.id} platform roles after filtering: {platform_role_names}")
+    return platform_role_names
 
 
 async def get_bu_membership(
@@ -99,20 +105,29 @@ async def get_bu_membership(
 ) -> Optional[BusinessUnitMember]:
     """
     Get user's membership in a specific business unit with role.
-    Returns BusinessUnitMember if user is a member, None otherwise.
+    Returns first BusinessUnitMember with a role if user is a member, None otherwise.
+    Note: A user can have multiple roles in a BU, so we return the first one with a role.
+    Prioritizes memberships with roles over memberships without roles.
     """
     from sqlalchemy.future import select
     from sqlalchemy.orm import selectinload
+    from sqlalchemy import or_
     
+    # First try to get a membership with a role (prioritize non-NULL role_id)
     result = await db.execute(
         select(BusinessUnitMember)
         .options(selectinload(BusinessUnitMember.role))
         .where(
             BusinessUnitMember.user_id == user_id,
-            BusinessUnitMember.business_unit_id == business_unit_id
+            BusinessUnitMember.business_unit_id == business_unit_id,
+            BusinessUnitMember.role_id.isnot(None)  # Only get memberships with roles
         )
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    membership = result.scalar_one_or_none()
+    
+    # If no membership with role found, return None (user needs a role to have permissions)
+    return membership
 
 
 async def check_permission(
@@ -185,16 +200,47 @@ async def check_permission(
         
         # Check BU membership
         membership = await get_bu_membership(user.id, business_unit_id, db)
-        if not membership or not membership.role:
+        if not membership:
             return False
+        
+        # If membership exists but has no role (role_id is NULL), user has no permissions
+        if not membership.role_id:
+            return False
+        
+        # Ensure role relationship is loaded (refresh to avoid lazy loading issues)
+        # The selectinload should have loaded it, but refresh ensures it's accessible
+        await db.refresh(membership, ["role"])
         
         # Get role and check permission
         role = membership.role
+        if not role:
+            return False
         # Check with BU context: bu:{bu_id}:resource
         bu_obj = f"bu:{business_unit_id}:{obj}"
         
-        if is_org_aware:
+        # Check if enforcer is OrgAwareEnforcer (from deps.py) or MultiTenantEnforcerWrapper
+        # OrgAwareEnforcer has _enforcer and _org_domain attributes
+        # MultiTenantEnforcerWrapper also has _org_domain
+        is_org_aware_enforcer = hasattr(enforcer, '_enforcer') and hasattr(enforcer, '_org_domain')
+        
+        # Force reload policies to pick up new BU-scoped permissions
+        # Navigate through wrappers to get to the base enforcer
+        base_enforcer = enforcer
+        if is_org_aware_enforcer:
+            base_enforcer = enforcer._enforcer
+            # If it's still a wrapper, get the actual base enforcer
+            if hasattr(base_enforcer, 'enforcer'):
+                base_enforcer = base_enforcer.enforcer
+        
+        # Reload policies on the base enforcer
+        if hasattr(base_enforcer, 'load_policy'):
+            base_enforcer.load_policy()
+        
+        if is_org_aware_enforcer:
             # OrgAwareEnforcer: (role.name, bu_obj, act) - org_domain is injected automatically
+            # The OrgAwareEnforcer.enforce() will call _enforcer.enforce() which is a MultiTenantEnforcerWrapper
+            # MultiTenantEnforcerWrapper.enforce(sub, obj, act) with 2 args injects org_domain
+            # So it becomes: base_enforcer.enforce(role.name, org_domain, bu_obj, act)
             has_permission = enforcer.enforce(role.name, bu_obj, act)
             # Fallback: Check without BU prefix
             if not has_permission:
@@ -270,5 +316,8 @@ async def check_platform_permission(
     Specialized check for platform permissions.
     Does not require business unit context.
     """
+    # Directly check the permission without circular dependency
+    # Note: We don't check is_platform_admin here to avoid circular dependency
+    # If user has platform permissions, they effectively have admin access
     return await check_permission(user, permission_slug, None, db, enforcer)
 

@@ -80,8 +80,6 @@ async def list_deployments(
     # Check if user is platform admin (has any platform permission)
     is_admin = await check_platform_permission(current_user, "platform:users:list", db, enforcer)
     
-    # Removed debug logging with user email
-    
     # Base query based on permissions - eager load tags
     # Deleted deployments are included in listings (they're marked as deleted but preserved in database)
     if is_admin:
@@ -89,6 +87,10 @@ async def list_deployments(
         base_query = select(Deployment).options(selectinload(Deployment.tags))
         base_count_query = select(func.count(Deployment.id))
         # Admin query - showing all deployments
+    elif has_list_permission:
+        # User has BU permission - can see all deployments in the BU
+        base_query = select(Deployment).options(selectinload(Deployment.tags))
+        base_count_query = select(func.count(Deployment.id))
     elif has_list_own:
         # Regular user: can only see their own deployments (including deleted)
         base_filter = Deployment.user_id == current_user.id
@@ -538,16 +540,27 @@ async def destroy_deployment(
     
     # Check ownership or admin permission
     from app.core.authorization import check_permission
+    from app.api.deps import is_platform_admin
     
     has_delete_permission = False
     if deployment.business_unit_id:
-        has_delete_permission = await check_permission(
-            current_user,
-            "business_unit:deployments:delete",
-            deployment.business_unit_id,
-            db,
-            enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer
-        )
+        # Check environment-specific delete permission
+        if deployment.environment:
+            environment = deployment.environment.lower()
+            permission_slug = f"business_unit:deployments:delete:{environment}"
+            has_delete_permission = await check_permission(
+                current_user,
+                permission_slug,
+                deployment.business_unit_id,
+                db,
+                enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer
+            )
+        
+        # Platform admins can delete deployments in any environment
+        if not has_delete_permission:
+            is_admin = await is_platform_admin(current_user, db, enforcer)
+            if is_admin:
+                has_delete_permission = True
     
     has_delete_own = await check_permission(
         current_user,

@@ -60,7 +60,11 @@ async def log_audit_event(
         
         db.add(audit_log)
         await db.commit()
-        await db.refresh(audit_log)
+        
+        # Note: We don't refresh the audit_log here because:
+        # 1. We already have all the data we need in memory
+        # 2. Refresh can fail in async contexts with relationship loading
+        # 3. The audit_log is typically not returned or used after creation
         
         return audit_log
     except Exception as e:

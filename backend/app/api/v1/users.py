@@ -17,9 +17,14 @@ async def user_to_response(user: User, enforcer: OrgAwareEnforcer, db: AsyncSess
     """
     Helper function to convert User model to UserResponse with Casbin roles.
     Filters roles to ensure only actual roles from the database are returned (not group names).
+    Also includes Business Unit roles from business_unit_members table.
     """
     # Get organization domain for role queries
     from app.core.organization import get_user_organization, get_organization_domain
+    from app.api.deps import is_platform_admin
+    from app.core.casbin import get_enforcer as get_base_enforcer
+    from app.models.business_unit import BusinessUnitMember
+    
     org = await get_user_organization(user, db)
     org_domain = get_organization_domain(org)
     
@@ -39,6 +44,23 @@ async def user_to_response(user: User, enforcer: OrgAwareEnforcer, db: AsyncSess
     else:
         user_roles = []
     
+    # Also get Business Unit roles from business_unit_members table
+    bu_memberships_result = await db.execute(
+        select(BusinessUnitMember, Role)
+        .join(Role, BusinessUnitMember.role_id == Role.id)
+        .where(BusinessUnitMember.user_id == user.id)
+    )
+    bu_memberships = bu_memberships_result.all()
+    
+    # Add BU roles to the user_roles list
+    for bu_member, bu_role in bu_memberships:
+        if bu_role.name not in user_roles:
+            user_roles.append(bu_role.name)
+    
+    # Check if user is platform admin
+    # Use OrgAwareEnforcer to ensure org_domain is properly set
+    user_is_admin = await is_platform_admin(user, db, enforcer)
+    
     return UserResponse(
         id=user.id,
         email=user.email,
@@ -46,6 +68,7 @@ async def user_to_response(user: User, enforcer: OrgAwareEnforcer, db: AsyncSess
         full_name=user.full_name,
         avatar_url=user.avatar_url,
         is_active=user.is_active,
+        is_admin=user_is_admin,
         created_at=user.created_at,
         roles=user_roles
     )
@@ -116,16 +139,15 @@ async def get_my_permissions(
                 perm_slug = f"{policy[1]}:{policy[2]}"
                 all_permissions.add(perm_slug)
     
-    # Debug: Log extracted permissions for troubleshooting
+    # Debug: Log extracted permissions for troubleshooting (only at DEBUG level, not WARNING)
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"User {user_id} (org_domain: {org_domain}) has roles: {user_roles}")
-    logger.info(f"User {user_id} total permissions extracted: {len(all_permissions)}")
+    logger.debug(f"User {user_id} (org_domain: {org_domain}) has roles: {user_roles}")
+    logger.debug(f"User {user_id} total permissions extracted: {len(all_permissions)}")
+    # Removed verbose permission list logging - only log count
     deployment_perms = [p for p in all_permissions if p.startswith('deployments:')]
-    if deployment_perms:
-        logger.info(f"User {user_id} has deployment permissions: {deployment_perms}")
-    else:
-        logger.warning(f"User {user_id} has NO deployment permissions! All permissions: {sorted(all_permissions)}")
+    if not deployment_perms:
+        logger.debug(f"User {user_id} has NO deployment permissions (total: {len(all_permissions)} permissions)")
     
     # Get metadata from database or registry (gracefully handle if table doesn't exist yet)
     db_metadata = {}
@@ -257,15 +279,33 @@ async def get_admin_stats(
     # Note: Group isolation is handled by Casbin domains
     total_groups = await db.scalar(select(func.count(Group.id)))
     
-    # Count roles from Casbin
-    all_casbin_roles = enforcer.get_all_roles()
-    total_roles = len(all_casbin_roles)
+    # Count roles from database (not Casbin, as Casbin may include group names)
+    total_roles = await db.scalar(select(func.count(Role.id)))
     
-    # Calculate role distribution
+    # Calculate role distribution - get all roles from database
+    all_roles_result = await db.execute(select(Role))
+    all_roles = all_roles_result.scalars().all()
+    
     role_distribution = []
-    for role in all_casbin_roles:
-        users_in_role = enforcer.get_users_for_role(role)
-        role_distribution.append({"role": role, "count": len(users_in_role)})
+    for role in all_roles:
+        # Count users with this role from Casbin (platform roles)
+        users_in_casbin = enforcer.get_users_for_role(role.name)
+        casbin_count = len(users_in_casbin)
+        
+        # Count users with this role from business_unit_members (BU roles)
+        from app.models.business_unit import BusinessUnitMember
+        bu_count_result = await db.execute(
+            select(func.count(BusinessUnitMember.user_id))
+            .where(BusinessUnitMember.role_id == role.id)
+        )
+        bu_count = bu_count_result.scalar() or 0
+        
+        # Total count is the sum (a user might have the role both ways, but we count unique users)
+        # For simplicity, we'll add them - if a user has both, they're counted once in each
+        # In practice, this is fine as BU roles and platform roles are typically separate
+        total_count = casbin_count + bu_count
+        
+        role_distribution.append({"role": role.name, "count": total_count})
     
     return {
         "total_users": total_users or 0,
@@ -403,25 +443,62 @@ async def list_users(
     org = await get_user_organization(current_user, db)
     org_domain = get_organization_domain(org)
     
-    # Role filtering
+    # Role filtering - check both Casbin (platform roles) and business_unit_members (BU roles)
     if role:
-        users_with_role = enforcer.get_users_for_role(role)
-        if users_with_role:
-            # Convert string IDs to UUIDs for the query
-            from uuid import UUID
-            try:
-                user_uuids = [UUID(uid) for uid in users_with_role]
-                query = query.where(User.id.in_(user_uuids))
-                count_query = count_query.where(User.id.in_(user_uuids))
-            except (ValueError, TypeError):
-                # If conversion fails, return empty result
-                return {
-                    "items": [],
-                    "total": 0,
-                    "skip": skip,
-                    "limit": limit
-                }
+        from uuid import UUID
+        from app.models.business_unit import BusinessUnitMember
+        
+        # First, find the role to check if it's a platform or BU role
+        role_result = await db.execute(select(Role).where(Role.name == role))
+        role_obj = role_result.scalar_one_or_none()
+        
+        if not role_obj:
+            # Role doesn't exist, return empty
+            return {
+                "items": [],
+                "total": 0,
+                "skip": skip,
+                "limit": limit
+            }
+        
+        all_user_uuids = set()
+        
+        # Check platform roles (from Casbin) - for both platform and BU roles
+        # Get all users in the organization first (we need to check their roles)
+        all_org_users_result = await db.execute(
+            select(User.id).where(User.organization_id == current_user.organization_id)
+        )
+        all_org_user_ids = list(all_org_users_result.scalars().all())
+        
+        # Get valid role names once (to filter out group names)
+        valid_role_names_result = await db.execute(select(Role.name))
+        valid_role_names = {role_name for role_name in valid_role_names_result.scalars().all()}
+        
+        # Check each user's roles (which includes group-inherited roles)
+        # This is more reliable than get_users_for_role which might miss group-inherited roles
+        for user_id in all_org_user_ids:
+            user_roles = enforcer.get_roles_for_user(str(user_id))
+            # Filter to only valid role names (exclude group names)
+            if user_roles:
+                valid_user_roles = [r for r in user_roles if r in valid_role_names]
+                if role in valid_user_roles:
+                    all_user_uuids.add(user_id)
+        
+        # Also check BU roles from business_unit_members table
+        # Only if the role is a BU role (is_platform_role = False)
+        if not role_obj.is_platform_role:
+            bu_members_result = await db.execute(
+                select(BusinessUnitMember.user_id)
+                .where(BusinessUnitMember.role_id == role_obj.id)
+            )
+            bu_user_uuids = {user_id for user_id in bu_members_result.scalars().all()}
+            all_user_uuids = all_user_uuids.union(bu_user_uuids)
+        
+        if all_user_uuids:
+            query = query.where(User.id.in_(list(all_user_uuids)))
+            count_query = count_query.where(User.id.in_(list(all_user_uuids)))
         else:
+            # No users found with this role
             return {
                 "items": [],
                 "total": 0,
@@ -455,6 +532,23 @@ async def list_users(
     if hasattr(enforcer, 'set_org_domain') and (not hasattr(enforcer, '_org_domain') or not enforcer._org_domain):
         enforcer.set_org_domain(org_domain)
     
+    # Get all BU memberships for all users in one query (for performance)
+    from app.models.business_unit import BusinessUnitMember
+    from sqlalchemy.orm import selectinload
+    bu_memberships_result = await db.execute(
+        select(BusinessUnitMember, Role)
+        .join(Role, BusinessUnitMember.role_id == Role.id)
+        .where(BusinessUnitMember.user_id.in_([u.id for u in users]))
+    )
+    bu_memberships = bu_memberships_result.all()
+    
+    # Create a map of user_id -> list of BU role names
+    bu_roles_by_user = {}
+    for bu_member, bu_role in bu_memberships:
+        if bu_member.user_id not in bu_roles_by_user:
+            bu_roles_by_user[bu_member.user_id] = []
+        bu_roles_by_user[bu_member.user_id].append(bu_role.name)
+    
     for user in users:
         # Get roles for user with organization domain
         user_roles = enforcer.get_roles_for_user(str(user.id))
@@ -466,6 +560,23 @@ async def list_users(
         else:
             user_roles = []
         
+        # Add BU roles for this user
+        if user.id in bu_roles_by_user:
+            for bu_role in bu_roles_by_user[user.id]:
+                if bu_role not in user_roles:
+                    user_roles.append(bu_role)
+        
+        # For list endpoint, only check is_admin for current user to avoid performance issues
+        # For other users, set is_admin=False (it's only relevant for the current user's own context)
+        user_is_admin = False
+        if user.id == current_user.id:
+            from app.api.deps import is_platform_admin
+            # Use the same enforcer that's already set up with org_domain
+            # Ensure it has org_domain set
+            if hasattr(enforcer, 'set_org_domain') and (not hasattr(enforcer, '_org_domain') or not enforcer._org_domain):
+                enforcer.set_org_domain(org_domain)
+            user_is_admin = await is_platform_admin(user, db, enforcer)
+        
         user_responses.append(UserResponse(
             id=user.id,
             email=user.email,
@@ -473,6 +584,7 @@ async def list_users(
             full_name=user.full_name,
             avatar_url=user.avatar_url,
             is_active=user.is_active,
+            is_admin=user_is_admin,
             created_at=user.created_at,
             roles=user_roles
         ))

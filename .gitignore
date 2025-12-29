@@ -1,62 +1,61 @@
-# General
-.DS_Store
-Thumbs.db
-*.log
-logs/
-tmp/
+# Environment files
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
 
-# IDEs
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+env/
+ENV/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# Environment Variables
-.env
-.env.*
-!.env.example
+# Logs
+logs/
+*.log
 
-# Python / Backend
-backend/__pycache__/
-backend/*.py[cod]
-backend/*$py.class
-backend/venv/
-backend/.venv/
-backend/env/
-backend/.pytest_cache/
-backend/.coverage
-backend/htmlcov/
-backend/*.db
-backend/*.sqlite3
-backend/*.egg-info/
-backend/dist/
-backend/build/
-backend/.eggs/
+# Storage
+storage/plugins/*
+storage/git-repos/*
+!storage/plugins/.gitkeep
+!storage/git-repos/.gitkeep
 
-# Backend Static Uploads (Avatars)
-backend/static/avatars/*
-!backend/static/avatars/.gitkeep
+# OS
+.DS_Store
+Thumbs.db
 
-# Node / Frontend
-frontend/node_modules/
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.nyc_output/
+
+# Build outputs
 frontend/dist/
 frontend/build/
-frontend/.output/
-frontend/coverage/
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
-frontend/.next/
-frontend/out/
 
-# Agent / Tooling
-.gemini/
-.agent/
-
-# Storage and sensitive keys
-backend/storage/
-storage/
-*.oidc_keys.json
-.oidc_keys.json
-plugins-templates/
+# Docker
+*.dockerignore

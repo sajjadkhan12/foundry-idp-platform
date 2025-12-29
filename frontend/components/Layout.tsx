@@ -51,12 +51,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, [location.pathname]);
 
   const handleLogout = async () => {
-    // Clear shown notification IDs on logout to prevent notifications from popping up again on next login
-    try {
-      localStorage.removeItem('shownNotificationIds');
-    } catch (err) {
-      // Silently ignore if localStorage is not available
-    }
+    // Don't clear shown notification IDs on logout - they should persist per user
+    // This way, if a user logs out and logs back in, they won't see the same notification popup again
+    // The NotificationCenter component stores shown IDs per user, so each user has their own list
     await logout();
     navigate('/login');
   };
