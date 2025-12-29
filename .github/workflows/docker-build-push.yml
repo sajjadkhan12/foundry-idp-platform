@@ -52,6 +52,7 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-,format=short
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
@@ -59,7 +60,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./${{ matrix.component }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -71,7 +72,6 @@ jobs:
         run: echo "${{ steps.meta.outputs.tags }}"
       
       - name: Save image tag for manifest update
-        if: github.event_name != 'pull_request'
         id: save-tag
         run: |
           # Extract the primary tag (prefer semver, then branch-sha, then latest)
@@ -80,20 +80,28 @@ jobs:
           echo "All tags:"
           echo "$TAGS"
           
-          # Try to find semver tag first (v1.0.0 format)
+          # Use unique tags for ArgoCD to detect changes (not "latest")
+          # Priority: semver > branch-SHA > branch name > sha- > latest
+          
+          # Try semver tag first (v1.0.0 format) - unique per release
           PRIMARY_TAG=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
           
-          # If no semver, try branch name format (e.g., main)
+          # If no semver, try branch-SHA format (e.g., main-abc1234) - unique per commit
           if [ -z "$PRIMARY_TAG" ]; then
-            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^[a-zA-Z0-9_-]+$' | grep -v '^sha-' | head -n1)
+            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^[a-zA-Z0-9_-]+-[a-f0-9]{7,}$' | head -n1)
           fi
           
-          # If no branch tag, try sha- format (e.g., sha-abc1234)
+          # If no branch-SHA, try branch name format (e.g., main) - unique per branch
+          if [ -z "$PRIMARY_TAG" ]; then
+            PRIMARY_TAG=$(echo "$TAGS" | grep -E '^[a-zA-Z0-9_-]+$' | grep -v '^sha-' | grep -v '^latest$' | head -n1)
+          fi
+          
+          # If no branch tag, try sha- format (e.g., sha-abc1234) - unique per commit
           if [ -z "$PRIMARY_TAG" ]; then
             PRIMARY_TAG=$(echo "$TAGS" | grep -E '^sha-[a-f0-9]+$' | head -n1)
           fi
           
-          # If still no tag, try latest
+          # Fallback to latest only if nothing else is available
           if [ -z "$PRIMARY_TAG" ]; then
             PRIMARY_TAG=$(echo "$TAGS" | grep 'latest' | head -n1)
           fi
@@ -121,14 +129,12 @@ jobs:
           echo "Full image: $FULL_IMAGE"
       
       - name: Save image info to file
-        if: github.event_name != 'pull_request'
         run: |
           mkdir -p ${{ github.workspace }}/.github
           echo "${{ steps.save-tag.outputs.tag }}" > ${{ github.workspace }}/.github/image-tag-${{ matrix.component }}.txt
           echo "${{ steps.save-tag.outputs.full_image }}" > ${{ github.workspace }}/.github/image-full-${{ matrix.component }}.txt
       
       - name: Upload image info
-        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: image-info-${{ matrix.component }}
@@ -140,7 +146,7 @@ jobs:
   update-k8s-manifests:
     runs-on: ubuntu-latest
     needs: build-and-push
-    if: github.event_name != 'pull_request'
+    if: needs.build-and-push.result == 'success'
     permissions:
       contents: write
     
