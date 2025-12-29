@@ -9,38 +9,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
-COPY pyproject.toml ./
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:$PATH"
 
-# Install build dependencies and project dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    SQLAlchemy \
-    asyncpg \
-    "pydantic[email]" \
-    python-dotenv \
-    celery \
-    pydantic-settings \
-    bcrypt \
-    "python-jose[cryptography]" \
-    greenlet \
-    python-multipart \
-    redis \
-    psycopg2-binary \
-    casbin \
-    casbin-sqlalchemy-adapter \
-    pulumi \
-    cryptography \
-    pyyaml \
-    "pyjwt[crypto]" \
-    boto3 \
-    httpx \
-    requests \
-    "GitPython>=3.1.40"
+# Copy dependency files
+COPY pyproject.toml uv.lock* ./
+
+# Install dependencies using uv (installs to system Python, uses lock file for reproducibility)
+RUN uv pip install --system --locked --no-cache -e .
 
 # Production stage
 FROM python:3.11-slim
