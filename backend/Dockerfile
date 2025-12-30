@@ -94,6 +94,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Default command (can be overridden for worker)
 # Use 1 worker per pod in K8s (replicas handle scaling)
-# For local dev, you can override with --workers flag
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers: Trust X-Forwarded-Proto header from reverse proxy (Caddy/Nginx)
+# --forwarded-allow-ips=*: Allow forwarded headers from any IP (safe behind proxy)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
 
