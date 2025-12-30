@@ -68,9 +68,8 @@ class PulumiService:
             logger.error(f"[Pulumi] {error_msg}")
             raise ValueError(error_msg)
         
-        # Set ESC environment variable for Pulumi to use
-        env["PULUMI_ESC_ENVIRONMENT"] = esc_env
-        logger.info(f"[Pulumi] Using ESC environment: {esc_env} for automatic credential management")
+        # ESC environment will be linked to the stack after creation
+        logger.info(f"[Pulumi] ESC environment configured: {esc_env} - will link to stack for credential management")
         
         # Create workspace
         workspace_dir = self.work_dir / stack_name
@@ -100,12 +99,19 @@ class PulumiService:
             )
             
             # Create or select stack (Pulumi Cloud backend is automatically used when PULUMI_ACCESS_TOKEN is set)
-            # ESC environment is already set in env_vars if configured
             stack = auto.create_or_select_stack(
                 stack_name=stack_name,
                 work_dir=str(plugin_path),
                 opts=workspace_opts
             )
+            
+            # Link ESC environment to the stack for credential management
+            if use_esc and esc_env:
+                try:
+                    stack.add_environments([esc_env])
+                    logger.info(f"[Pulumi] Linked ESC environment '{esc_env}' to stack for credential management")
+                except Exception as esc_error:
+                    logger.warning(f"[Pulumi] Failed to link ESC environment: {esc_error}")
             
             # Log backend information
             if use_pulumi_cloud:
@@ -219,9 +225,8 @@ class PulumiService:
             logger.error(f"[Pulumi] {error_msg}")
             raise ValueError(error_msg)
         
-        # Set ESC environment variable for Pulumi to use
-        env["PULUMI_ESC_ENVIRONMENT"] = esc_env
-        logger.info(f"[Pulumi] Using ESC environment: {esc_env} for destroy (automatic credential management)")
+        # ESC environment will be linked to the stack after selection
+        logger.info(f"[Pulumi] ESC environment configured: {esc_env} - will link to stack for destroy")
         
         try:
             # Configure secrets provider based on backend type
@@ -252,7 +257,14 @@ class PulumiService:
                     opts=workspace_opts
                 )
                 
-                # ESC environment is already set in env_vars if configured
+                # Link ESC environment to the stack for credential management
+                if use_esc and esc_env:
+                    try:
+                        stack.add_environments([esc_env])
+                        logger.info(f"[Pulumi] Linked ESC environment '{esc_env}' to stack for destroy")
+                    except Exception as esc_error:
+                        logger.warning(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                
                 backend_type = "Pulumi Cloud" if use_pulumi_cloud else "local"
                 logger.info(f"[Pulumi] Selected existing stack {stack_name} from {backend_type}")
             except Exception as select_error:
