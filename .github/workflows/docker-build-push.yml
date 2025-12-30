@@ -60,7 +60,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            ${{ matrix.component == 'frontend' && 'VITE_API_URL=https://foundry-idp.com' || '' }}
+            ${{ matrix.component == 'frontend' && 'VITE_API_URL=https://foundry-idp.com/api' || '' }}
 
       - name: Image digest for ${{ matrix.component }}
         run: echo "${{ steps.meta.outputs.tags }}"
