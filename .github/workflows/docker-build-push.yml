@@ -50,15 +50,6 @@ jobs:
           tags: |
             type=raw,value=latest
 
-      - name: Set build args
-        id: buildargs
-        run: |
-          if [ "${{ matrix.component }}" == "frontend" ]; then
-            echo "args=VITE_API_URL=https://foundry-idp.com/api" >> $GITHUB_OUTPUT
-          else
-            echo "args=" >> $GITHUB_OUTPUT
-          fi
-
       - name: Build and push Docker image for ${{ matrix.component }}
         uses: docker/build-push-action@v5
         with:
@@ -68,7 +59,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: ${{ steps.buildargs.outputs.args }}
+          build-args: |
+            ${{ matrix.component == 'frontend' && 'VITE_API_URL=https://foundry-idp.com/api' || '# No build args' }}
 
       - name: Image digest for ${{ matrix.component }}
         run: echo "${{ steps.meta.outputs.tags }}"
