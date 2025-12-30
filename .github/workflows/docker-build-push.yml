@@ -26,7 +26,14 @@ jobs:
 
     strategy:
       matrix:
-        component: [backend, frontend]
+        include:
+          - component: backend
+            build_args: ""
+            no_cache: false
+          - component: frontend
+            build_args: |
+              VITE_API_URL=https://foundry-idp.com/api
+            no_cache: true
 
     steps:
       - name: Checkout code
@@ -59,8 +66,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            ${{ matrix.component == 'frontend' && 'VITE_API_URL=https://foundry-idp.com/api' || '# No build args' }}
+          no-cache: ${{ matrix.no_cache }}
+          build-args: ${{ matrix.build_args }}
 
       - name: Image digest for ${{ matrix.component }}
         run: echo "${{ steps.meta.outputs.tags }}"
