@@ -45,7 +45,6 @@ class PulumiService:
         
         # Configure Pulumi Cloud backend if access token is set
         use_pulumi_cloud = bool(settings.PULUMI_ACCESS_TOKEN)
-        use_pulumi_cloud_creds = use_pulumi_cloud and settings.PULUMI_USE_CLOUD_CREDENTIALS
         
         # Check if ESC environment is configured for this cloud provider
         esc_env = self.get_esc_environment(manifest)
@@ -58,8 +57,6 @@ class PulumiService:
             if settings.PULUMI_ORG:
                 env["PULUMI_ORG"] = settings.PULUMI_ORG
             logger.info(f"[Pulumi] Using Pulumi Cloud backend (org: {settings.PULUMI_ORG or 'default'})")
-            if use_pulumi_cloud_creds:
-                logger.info("[Pulumi] Using Pulumi Cloud backend with ESC for credential management")
         else:
             # Only set Pulumi passphrase for local secrets when not using Pulumi Cloud
             env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
@@ -197,7 +194,6 @@ class PulumiService:
         
         # Configure Pulumi Cloud backend if access token is set
         use_pulumi_cloud = bool(settings.PULUMI_ACCESS_TOKEN)
-        use_pulumi_cloud_creds = use_pulumi_cloud and settings.PULUMI_USE_CLOUD_CREDENTIALS
         
         # Check if ESC environment is configured for this cloud provider
         # Create a minimal manifest-like dict for ESC lookup
@@ -212,8 +208,6 @@ class PulumiService:
             if settings.PULUMI_ORG:
                 env["PULUMI_ORG"] = settings.PULUMI_ORG
             logger.info(f"[Pulumi] Using Pulumi Cloud backend for destroy (org: {settings.PULUMI_ORG or 'default'})")
-            if use_pulumi_cloud_creds:
-                logger.info("[Pulumi] Using Pulumi Cloud backend with ESC for credential management")
         else:
             # Only set Pulumi passphrase for local secrets when not using Pulumi Cloud
             env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
