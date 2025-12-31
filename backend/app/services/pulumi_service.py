@@ -108,10 +108,12 @@ class PulumiService:
             # Link ESC environment to the stack for credential management
             if use_esc and esc_env:
                 try:
-                    stack.add_environments([esc_env])
+                    # Link ESC environment to stack (note: variadic args, not a list)
+                    stack.add_environments(esc_env)
                     logger.info(f"[Pulumi] Linked ESC environment '{esc_env}' to stack for credential management")
                 except Exception as esc_error:
-                    logger.warning(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                    logger.error(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                    raise ValueError(f"ESC environment linking failed: {esc_error}")
             
             # Log backend information
             if use_pulumi_cloud:
@@ -260,10 +262,12 @@ class PulumiService:
                 # Link ESC environment to the stack for credential management
                 if use_esc and esc_env:
                     try:
-                        stack.add_environments([esc_env])
+                        # Link ESC environment to stack (note: variadic args, not a list)
+                        stack.add_environments(esc_env)
                         logger.info(f"[Pulumi] Linked ESC environment '{esc_env}' to stack for destroy")
                     except Exception as esc_error:
-                        logger.warning(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                        logger.error(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                        raise ValueError(f"ESC environment linking failed: {esc_error}")
                 
                 backend_type = "Pulumi Cloud" if use_pulumi_cloud else "local"
                 logger.info(f"[Pulumi] Selected existing stack {stack_name} from {backend_type}")
