@@ -5,7 +5,8 @@ from sqlalchemy import select, delete as sql_delete
 from typing import Dict, List
 
 from app.database import get_db
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
 from app.models.rbac import User
 from app.models.deployment import Deployment, DeploymentTag
 from app.services.tag_validator import validate_tag_key, validate_tag_value

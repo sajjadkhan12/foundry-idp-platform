@@ -12,7 +12,10 @@ from pathlib import Path
 from app.database import get_db
 from app.models import Plugin, PluginVersion, User, Job, JobLog, PluginAccessRequest, AccessRequestStatus
 from app.schemas.plugins import PluginResponse
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer, is_platform_admin, get_active_business_unit
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.helpers import is_platform_admin
+from app.api.deps.business_unit import get_active_business_unit
 from app.logger import logger
 from app.config import settings
 

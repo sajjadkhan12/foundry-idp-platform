@@ -6,7 +6,9 @@ from typing import List, Optional
 import uuid
 
 from app.database import get_db
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer, get_active_business_unit
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.business_unit import get_active_business_unit
 from app.models.rbac import User
 from app.models.deployment import Deployment, DeploymentTag
 
@@ -36,7 +38,7 @@ async def deployment_stats_by_environment(
     """Get deployment counts grouped by environment"""
     # Check permissions
     from app.core.authorization import check_permission
-    from app.api.deps import is_platform_admin
+    from app.api.deps.helpers import is_platform_admin
     
     # Check if user is platform admin first (admins can see all)
     is_admin = await is_platform_admin(current_user, db, enforcer.enforcer if hasattr(enforcer, 'enforcer') else enforcer)

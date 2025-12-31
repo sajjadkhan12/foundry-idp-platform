@@ -9,7 +9,8 @@ from typing import List
 from app.database import get_db
 from app.models import User, Organization
 from app.schemas.organization import OrganizationCreate, OrganizationUpdate, OrganizationResponse
-from app.api.deps import get_current_user, is_allowed
+from app.api.deps.auth import get_current_user
+from app.api.deps.permissions import is_allowed
 from app.logger import logger
 import uuid
 

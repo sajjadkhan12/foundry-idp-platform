@@ -11,7 +11,7 @@ import time
 from app.logger import logger
 from app.database import AsyncSessionLocal
 from app.services.audit_service import log_audit_event
-from app.api.deps import get_current_user
+from app.api.deps.auth import get_current_user
 from jose import JWTError, jwt
 from app.config import settings
 

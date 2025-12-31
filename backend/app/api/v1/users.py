@@ -6,7 +6,9 @@ import shutil
 import os
 from pathlib import Path
 from app.database import get_db
-from app.api.deps import get_current_user, get_current_active_superuser, is_allowed, OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.auth import get_current_user, get_current_active_superuser
+from app.api.deps.permissions import is_allowed
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
 from app.models.rbac import User, Role
 from app.schemas.user import UserResponse, UserUpdate, UserAdminUpdate, UserPasswordUpdate, UserCreate, PaginatedUserResponse
 from app.core.security import get_password_hash, verify_password
@@ -16,62 +18,10 @@ router = APIRouter(prefix="/users", tags=["users"])
 async def user_to_response(user: User, enforcer: OrgAwareEnforcer, db: AsyncSession) -> UserResponse:
     """
     Helper function to convert User model to UserResponse with Casbin roles.
-    Filters roles to ensure only actual roles from the database are returned (not group names).
-    Also includes Business Unit roles from business_unit_members table.
+    Uses centralized response_helpers to avoid duplication.
     """
-    # Get organization domain for role queries
-    from app.core.organization import get_user_organization, get_organization_domain
-    from app.api.deps import is_platform_admin
-    from app.core.casbin import get_enforcer as get_base_enforcer
-    from app.models.business_unit import BusinessUnitMember
-    
-    org = await get_user_organization(user, db)
-    org_domain = get_organization_domain(org)
-    
-    user_roles = enforcer.get_roles_for_user(str(user.id))
-    
-    # Filter roles to ensure they exist in the database (exclude group names)
-    if user_roles:
-        # Get all valid role names from database
-        result = await db.execute(select(Role.name))
-        valid_role_names = {role_name for role_name in result.scalars().all()}
-        
-        # Filter user_roles to only include valid roles
-        filtered_roles = [role for role in user_roles if role in valid_role_names]
-        
-        # Remove duplicates
-        user_roles = list(set(filtered_roles))
-    else:
-        user_roles = []
-    
-    # Also get Business Unit roles from business_unit_members table
-    bu_memberships_result = await db.execute(
-        select(BusinessUnitMember, Role)
-        .join(Role, BusinessUnitMember.role_id == Role.id)
-        .where(BusinessUnitMember.user_id == user.id)
-    )
-    bu_memberships = bu_memberships_result.all()
-    
-    # Add BU roles to the user_roles list
-    for bu_member, bu_role in bu_memberships:
-        if bu_role.name not in user_roles:
-            user_roles.append(bu_role.name)
-    
-    # Check if user is platform admin
-    # Use OrgAwareEnforcer to ensure org_domain is properly set
-    user_is_admin = await is_platform_admin(user, db, enforcer)
-    
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        username=user.username,
-        full_name=user.full_name,
-        avatar_url=user.avatar_url,
-        is_active=user.is_active,
-        is_admin=user_is_admin,
-        created_at=user.created_at,
-        roles=user_roles
-    )
+    from app.utils.response_helpers import user_to_response as helper_user_to_response
+    return await helper_user_to_response(user, enforcer, db, include_admin_check=True)
 
 @router.get("/me", response_model=UserResponse)
 async def read_users_me(
@@ -570,7 +520,7 @@ async def list_users(
         # For other users, set is_admin=False (it's only relevant for the current user's own context)
         user_is_admin = False
         if user.id == current_user.id:
-            from app.api.deps import is_platform_admin
+            from app.api.deps.helpers import is_platform_admin
             # Use the same enforcer that's already set up with org_domain
             # Ensure it has org_domain set
             if hasattr(enforcer, 'set_org_domain') and (not hasattr(enforcer, '_org_domain') or not enforcer._org_domain):

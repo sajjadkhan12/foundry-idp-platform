@@ -9,7 +9,11 @@ from typing import List, Optional
 import uuid
 
 from app.database import get_db
-from app.api.deps import get_current_user, get_org_aware_enforcer, OrgAwareEnforcer, is_allowed_bu, get_active_business_unit, is_platform_admin, is_allowed
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.permissions import is_allowed, is_allowed_bu
+from app.api.deps.business_unit import get_active_business_unit
+from app.api.deps.helpers import is_platform_admin
 from app.models.rbac import User
 from app.models.business_unit import BusinessUnit, BusinessUnitMember
 from app.models.rbac import Role
@@ -41,7 +45,7 @@ async def list_business_units(
     
     # Check if current user has business_units:manage_members permission in any business unit
     # This is permission-based, not role-name-based
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     
     # Get all business units where user is a member
     all_memberships_result = await db.execute(
@@ -372,7 +376,7 @@ async def get_business_unit(
         role = "admin"
     
     # Check if user has manage_members permission
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     can_manage = False
     if membership:
         can_manage = await check_bu_permission(
@@ -445,7 +449,7 @@ async def update_business_unit(
     org_domain = get_organization_domain(organization)
     is_admin = await is_platform_admin(current_user, db, enforcer)
     # Check if user has manage_members permission (permission-based, not role-name-based)
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     has_manage_permission = False
     if membership:
         has_manage_permission = await check_bu_permission(
@@ -515,7 +519,7 @@ async def update_business_unit(
     member_count = count_result.scalar() or 0
     
     # Check if user has manage_members permission
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     can_manage = False
     if membership:
         can_manage = await check_bu_permission(
@@ -637,7 +641,7 @@ async def list_business_unit_members(
     org_domain = get_organization_domain(organization)
     is_admin = await is_platform_admin(current_user, db, enforcer)
     # Check if user has manage_members permission (permission-based, not role-name-based)
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     has_manage_permission = False
     if membership:
         has_manage_permission = await check_bu_permission(
@@ -706,7 +710,7 @@ async def add_business_unit_member(
     org_domain = get_organization_domain(organization)
     is_admin = await is_platform_admin(current_user, db, enforcer)
     # Check if user has manage_members permission (permission-based, not role-name-based)
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     has_manage_permission = False
     if membership:
         has_manage_permission = await check_bu_permission(
@@ -981,7 +985,7 @@ async def remove_business_unit_member(
     org_domain = get_organization_domain(organization)
     is_admin = await is_platform_admin(current_user, db, enforcer)
     # Check if user has manage_members permission (permission-based, not role-name-based)
-    from app.api.deps import check_bu_permission
+    from app.api.deps.helpers import check_bu_permission
     has_manage_permission = False
     if membership:
         has_manage_permission = await check_bu_permission(

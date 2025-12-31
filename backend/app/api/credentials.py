@@ -8,7 +8,8 @@ from app.database import get_db
 from app.models import CloudCredential, CloudProvider, User
 from app.schemas.plugins import CloudCredentialCreate, CloudCredentialResponse
 from app.services.crypto import crypto_service
-from app.api.deps import get_current_user, is_allowed
+from app.api.deps.auth import get_current_user
+from app.api.deps.permissions import is_allowed
 
 router = APIRouter(prefix="/admin/credentials", tags=["Admin - Credentials"])
 

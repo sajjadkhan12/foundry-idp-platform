@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Dict
-from app.api.deps import get_db, is_allowed, OrgAwareEnforcer, get_org_aware_enforcer
+from app.database import get_db
+from app.api.deps.permissions import is_allowed
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
 from app.models.rbac import Group, Role, User
 from app.schemas.rbac import GroupCreate, GroupUpdate, GroupResponse, RoleResponse
 from app.logger import logger

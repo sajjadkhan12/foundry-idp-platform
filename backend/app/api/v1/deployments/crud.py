@@ -10,7 +10,10 @@ import uuid as uuid_lib
 import uuid
 
 from app.database import get_db
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer, get_active_business_unit, is_allowed_bu
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.business_unit import get_active_business_unit
+from app.api.deps.permissions import is_allowed_bu
 from app.models.rbac import User
 from app.models.deployment import Deployment, DeploymentStatus, DeploymentHistory, DeploymentTag
 from app.models.plugins import Job, JobStatus, JobLog, PluginVersion
@@ -245,7 +248,7 @@ async def create_deployment(
 ):
     # Check environment-specific permission using new format
     from app.core.authorization import check_permission
-    from app.api.deps import is_platform_admin
+    from app.api.deps.helpers import is_platform_admin
     
     if not business_unit_id:
         raise HTTPException(status_code=400, detail="Business unit is required for deployment creation")
@@ -540,7 +543,7 @@ async def destroy_deployment(
     
     # Check ownership or admin permission
     from app.core.authorization import check_permission
-    from app.api.deps import is_platform_admin
+    from app.api.deps.helpers import is_platform_admin
     
     has_delete_permission = False
     if deployment.business_unit_id:

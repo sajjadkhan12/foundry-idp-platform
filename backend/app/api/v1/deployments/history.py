@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 import uuid as uuid_lib
 
 from app.database import get_db
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
 from app.models.rbac import User
 from app.models.deployment import Deployment, DeploymentStatus, DeploymentHistory
 from app.models.plugins import Job, JobStatus, JobLog, PluginVersion
