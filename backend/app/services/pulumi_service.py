@@ -42,11 +42,34 @@ class PulumiService:
         """
         # Setup environment variables for cloud credentials
         env = os.environ.copy()
-        # Always set Pulumi passphrase for local secrets
-        env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
         
-        if credentials:
-            env = self._inject_credentials(env, credentials)
+        # Configure Pulumi Cloud backend if access token is set
+        use_pulumi_cloud = bool(settings.PULUMI_ACCESS_TOKEN)
+        
+        # Check if ESC environment is configured for this cloud provider
+        esc_env = self.get_esc_environment(manifest)
+        use_esc = esc_env is not None
+        
+        if use_pulumi_cloud:
+            # Set Pulumi Cloud access token
+            env["PULUMI_ACCESS_TOKEN"] = settings.PULUMI_ACCESS_TOKEN
+            # Set organization if configured
+            if settings.PULUMI_ORG:
+                env["PULUMI_ORG"] = settings.PULUMI_ORG
+            logger.info(f"[Pulumi] Using Pulumi Cloud backend (org: {settings.PULUMI_ORG or 'default'})")
+        else:
+            # Only set Pulumi passphrase for local secrets when not using Pulumi Cloud
+            env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
+        
+        # ESC is required for credential management
+        if not use_esc:
+            cloud_provider = manifest.get("cloud_provider", "unknown").lower() if manifest else "unknown"
+            error_msg = f"ESC environment not configured for {cloud_provider}. Please set PULUMI_ESC_ENVIRONMENT_{cloud_provider.upper()} in configuration."
+            logger.error(f"[Pulumi] {error_msg}")
+            raise ValueError(error_msg)
+        
+        # ESC environment will be linked to the stack after creation
+        logger.info(f"[Pulumi] ESC environment configured: {esc_env} - will link to stack for credential management")
         
         # Create workspace
         workspace_dir = self.work_dir / stack_name
@@ -54,23 +77,49 @@ class PulumiService:
         
         try:
             # Create or select stack
-            # Create or select stack
             import sys
+            
+            # Configure secrets provider based on backend type
+            secrets_provider = None if use_pulumi_cloud else "passphrase"
+            
+            # Create project settings
+            project_settings = auto.ProjectSettings(
+                name=project_name,
+                runtime=auto.ProjectRuntimeInfo(
+                    name="python",
+                    options={"virtualenv": sys.prefix}
+                )
+            )
+            
+            # Create workspace options
+            workspace_opts = auto.LocalWorkspaceOptions(
+                env_vars=env,
+                secrets_provider=secrets_provider,
+                project_settings=project_settings
+            )
+            
+            # Create or select stack (Pulumi Cloud backend is automatically used when PULUMI_ACCESS_TOKEN is set)
             stack = auto.create_or_select_stack(
                 stack_name=stack_name,
                 work_dir=str(plugin_path),
-                opts=auto.LocalWorkspaceOptions(
-                    env_vars=env,
-                    secrets_provider="passphrase",  # Use local secrets
-                    project_settings=auto.ProjectSettings(
-                        name=project_name,
-                        runtime=auto.ProjectRuntimeInfo(
-                            name="python",
-                            options={"virtualenv": sys.prefix}
-                        )
-                    )
-                )
+                opts=workspace_opts
             )
+            
+            # Link ESC environment to the stack for credential management
+            if use_esc and esc_env:
+                try:
+                    # Link ESC environment to stack (note: variadic args, not a list)
+                    stack.add_environments(esc_env)
+                    logger.info(f"[Pulumi] Linked ESC environment '{esc_env}' to stack for credential management")
+                except Exception as esc_error:
+                    logger.error(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                    raise ValueError(f"ESC environment linking failed: {esc_error}")
+            
+            # Log backend information
+            if use_pulumi_cloud:
+                logger.info(f"[Pulumi] Stack '{stack_name}' will use Pulumi Cloud backend")
+            else:
+                logger.info(f"[Pulumi] Stack '{stack_name}' will use local backend")
             
             # Set stack config
             # Skip None values and empty strings for optional fields
@@ -144,37 +193,84 @@ class PulumiService:
         plugin_path: Path,
         stack_name: str,
         credentials: Optional[Dict] = None,
-        project_name: str = "idp-plugin"  # Changed to match run_pulumi default
+        project_name: str = "idp-plugin",  # Changed to match run_pulumi default
+        cloud_provider: Optional[str] = None  # Optional cloud provider for ESC environment selection
     ) -> Dict:
         """Destroy a Pulumi stack"""
         import sys
         env = os.environ.copy()
-        # Always set Pulumi passphrase for local secrets
-        env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
         
-        if credentials:
-            env = self._inject_credentials(env, credentials)
+        # Configure Pulumi Cloud backend if access token is set
+        use_pulumi_cloud = bool(settings.PULUMI_ACCESS_TOKEN)
+        
+        # Check if ESC environment is configured for this cloud provider
+        # Create a minimal manifest-like dict for ESC lookup
+        manifest = {"cloud_provider": cloud_provider.lower()} if cloud_provider and isinstance(cloud_provider, str) else None
+        esc_env = self.get_esc_environment(manifest)
+        use_esc = esc_env is not None
+        
+        if use_pulumi_cloud:
+            # Set Pulumi Cloud access token
+            env["PULUMI_ACCESS_TOKEN"] = settings.PULUMI_ACCESS_TOKEN
+            # Set organization if configured
+            if settings.PULUMI_ORG:
+                env["PULUMI_ORG"] = settings.PULUMI_ORG
+            logger.info(f"[Pulumi] Using Pulumi Cloud backend for destroy (org: {settings.PULUMI_ORG or 'default'})")
+        else:
+            # Only set Pulumi passphrase for local secrets when not using Pulumi Cloud
+            env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
+        
+        # ESC is required for credential management
+        if not use_esc:
+            cloud_provider_str = cloud_provider.lower() if cloud_provider else "unknown"
+            error_msg = f"ESC environment not configured for {cloud_provider_str}. Please set PULUMI_ESC_ENVIRONMENT_{cloud_provider_str.upper()} in configuration."
+            logger.error(f"[Pulumi] {error_msg}")
+            raise ValueError(error_msg)
+        
+        # ESC environment will be linked to the stack after selection
+        logger.info(f"[Pulumi] ESC environment configured: {esc_env} - will link to stack for destroy")
         
         try:
-            # First try to select the existing stack (from Pulumi Cloud)
+            # Configure secrets provider based on backend type
+            secrets_provider = None if use_pulumi_cloud else "passphrase"
+            
+            # Create project settings
+            project_settings = auto.ProjectSettings(
+                name=project_name,
+                runtime=auto.ProjectRuntimeInfo(
+                    name="python",
+                    options={"virtualenv": sys.prefix}
+                )
+            )
+            
+            # Create workspace options
+            workspace_opts = auto.LocalWorkspaceOptions(
+                env_vars=env,
+                secrets_provider=secrets_provider,
+                project_settings=project_settings
+            )
+            
+            # First try to select the existing stack (from Pulumi Cloud or local)
             # This will work if the stack exists in Pulumi Cloud
             try:
                 stack = auto.select_stack(
                     stack_name=stack_name,
                     work_dir=str(plugin_path),
-                    opts=auto.LocalWorkspaceOptions(
-                        env_vars=env,
-                        secrets_provider="passphrase",
-                        project_settings=auto.ProjectSettings(
-                            name=project_name,
-                            runtime=auto.ProjectRuntimeInfo(
-                                name="python",
-                                options={"virtualenv": sys.prefix}
-                            )
-                        )
-                    )
+                    opts=workspace_opts
                 )
-                logger.info(f"[Pulumi] Selected existing stack {stack_name} from Pulumi Cloud")
+                
+                # Link ESC environment to the stack for credential management
+                if use_esc and esc_env:
+                    try:
+                        # Link ESC environment to stack (note: variadic args, not a list)
+                        stack.add_environments(esc_env)
+                        logger.info(f"[Pulumi] Linked ESC environment '{esc_env}' to stack for destroy")
+                    except Exception as esc_error:
+                        logger.error(f"[Pulumi] Failed to link ESC environment: {esc_error}")
+                        raise ValueError(f"ESC environment linking failed: {esc_error}")
+                
+                backend_type = "Pulumi Cloud" if use_pulumi_cloud else "local"
+                logger.info(f"[Pulumi] Selected existing stack {stack_name} from {backend_type}")
             except Exception as select_error:
                 # If select fails, try create_or_select (will create if doesn't exist)
                 error_str = str(select_error).lower()
@@ -190,18 +286,10 @@ class PulumiService:
                 stack = auto.create_or_select_stack(
                     stack_name=stack_name,
                     work_dir=str(plugin_path),
-                    opts=auto.LocalWorkspaceOptions(
-                        env_vars=env,
-                        secrets_provider="passphrase",
-                        project_settings=auto.ProjectSettings(
-                            name=project_name,
-                            runtime=auto.ProjectRuntimeInfo(
-                                name="python",
-                                options={"virtualenv": sys.prefix}
-                            )
-                        )
-                    )
+                    opts=workspace_opts
                 )
+                
+                # ESC environment is already set in env_vars if configured
             
             # Check if stack exists by trying to get its outputs
             try:
@@ -319,139 +407,32 @@ class PulumiService:
                 "error": error_msg
             }
     
-    def _inject_credentials(self, env: Dict, credentials: Dict) -> Dict:
-        """Inject cloud credentials into environment"""
-        # GCP
-        if "type" in credentials:
-            if credentials["type"] == "service_account":
-                # Static service account JSON
-                import json
-                sa_file = Path(tempfile.gettempdir()) / "gcp_sa.json"
-                with open(sa_file, "w") as f:
-                    json.dump(credentials, f)
-                env["GOOGLE_APPLICATION_CREDENTIALS"] = str(sa_file)
-                # Unset GOOGLE_OAUTH_ACCESS_TOKEN if it exists to avoid conflicts
-                env.pop("GOOGLE_OAUTH_ACCESS_TOKEN", None)
-            elif credentials["type"] == "gcp_access_token":
-                # OIDC-exchanged access token - ONLY OIDC, no static credentials
-                # The Pulumi GCP provider uses the Google Cloud SDK
-                # We need to ensure the access token is used and prevent fallback to user credentials
-                access_token = credentials.get("access_token", "")
-                if access_token:
-                    from app.config import settings
-                    import subprocess
-                    import tempfile
-                    import os
-                    
-                    # Create a completely isolated gcloud config directory
-                    # This prevents using any default user credentials
-                    temp_config_dir = tempfile.mkdtemp(prefix="gcp_oidc_")
-                    env["CLOUDSDK_CONFIG"] = temp_config_dir
-                    
-                    # CRITICAL: Unset ALL credential paths to prevent fallback to user credentials
-                    env.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
-                    env.pop("CLOUDSDK_AUTH_ACCESS_TOKEN", None)
-                    env.pop("CLOUDSDK_CORE_ACCOUNT", None)
-                    env.pop("GOOGLE_OAUTH_ACCESS_TOKEN", None)  # Will set it properly below
-                    
-                    # Set project ID
-                    if settings.GCP_PROJECT_ID:
-                        env["GOOGLE_CLOUD_PROJECT"] = settings.GCP_PROJECT_ID
-                        env["GCLOUD_PROJECT"] = settings.GCP_PROJECT_ID
-                        env["CLOUDSDK_CORE_PROJECT"] = settings.GCP_PROJECT_ID
-                    
-                    # OIDC-only: Use the access token directly
-                    # The Google Cloud SDK checks credentials in this order:
-                    # 1. GOOGLE_APPLICATION_CREDENTIALS (service account JSON)
-                    # 2. gcloud CLI default credentials (from CLOUDSDK_CONFIG)
-                    # 3. Compute Engine metadata
-                    #
-                    # Since we only have an access token, we need to ensure it's used
-                    # The SDK doesn't directly support access tokens, so we'll use gcloud CLI
-                    
-                    sa_email = settings.GCP_SERVICE_ACCOUNT_EMAIL
-                    
-                    # Set the access token in environment variables
-                    env["CLOUDSDK_AUTH_ACCESS_TOKEN"] = access_token
-                    env["GOOGLE_OAUTH_ACCESS_TOKEN"] = access_token
-                    
-                    # IMPORTANT: Do NOT set GOOGLE_APPLICATION_CREDENTIALS
-                    # This would cause the SDK to try to use a service account file
-                    # Instead, we'll rely on gcloud CLI to use the token
-                    
-                    # Use gcloud CLI to set the token as the active credential
-                    # The Pulumi provider will then use gcloud's credentials
-                    try:
-                        # Write the access token to a temporary file
-                        token_file = Path(tempfile.gettempdir()) / f"gcp_token_{int(time.time())}.txt"
-                        with open(token_file, "w") as f:
-                            f.write(access_token)
-                        
-                        # Use gcloud to activate the service account with the token
-                        # We'll use gcloud auth activate-service-account with a dummy key
-                        # and then override with the access token
-                        
-                        # Actually, a better approach: use gcloud to set the access token
-                        # via the application-default credentials
-                        subprocess.run(
-                            ["gcloud", "auth", "application-default", "print-access-token"],
-                            env=env,
-                            capture_output=True,
-                            timeout=5,
-                            check=False
-                        )
-                        
-                        # The token is set in CLOUDSDK_AUTH_ACCESS_TOKEN
-                        # gcloud should use it, and Pulumi will use gcloud's credentials
-                        logger.info(f"GCP OIDC access token configured via environment variables")
-                        logger.info(f"Using isolated gcloud config: {temp_config_dir}")
-                        logger.info(f"Token set for service account: {sa_email or 'default'}")
-                        
-                        # Clean up token file
-                        try:
-                            token_file.unlink()
-                        except:
-                            pass
-                        
-                    except Exception as e:
-                        logger.warning(f"Could not configure gcloud with OIDC token: {e}")
-                        # Continue anyway - the environment variables should work
-                    
-                    sa_email = settings.GCP_SERVICE_ACCOUNT_EMAIL
-                    if sa_email:
-                        logger.info(f"OIDC token is for service account: {sa_email}")
+    def get_esc_environment(self, manifest: Optional[Dict]) -> Optional[str]:
+        """
+        Determine the appropriate ESC environment based on cloud provider from manifest.
         
-        # AWS
-        # Check for both formats: aws_access_key_id (from OIDC) and access_key_id (legacy)
-        aws_access_key = credentials.get("aws_access_key_id") or credentials.get("access_key_id")
-        if aws_access_key:
-            env["AWS_ACCESS_KEY_ID"] = aws_access_key
-            env["AWS_SECRET_ACCESS_KEY"] = credentials.get("aws_secret_access_key") or credentials.get("secret_access_key", "")
-            # Session token is required for temporary credentials (from OIDC exchange)
-            aws_session_token = credentials.get("aws_session_token") or credentials.get("session_token")
-            if aws_session_token:
-                env["AWS_SESSION_TOKEN"] = aws_session_token
-            # Region
-            aws_region = credentials.get("aws_region") or credentials.get("region")
-            if aws_region:
-                env["AWS_REGION"] = aws_region
-            elif "AWS_REGION" not in env:
-                env["AWS_REGION"] = "us-east-1"  # Default region
+        Args:
+            manifest: Plugin manifest containing cloud_provider information
             
-            logger.debug(f"AWS credentials injected (masked for security)")
+        Returns:
+            ESC environment name (e.g., "Sajjadkhan12/gcp-production") or None if not configured
+        """
+        if not settings.PULUMI_USE_ESC:
+            return None
         
-        # Azure
-        if "azure_client_id" in credentials:
-            env["AZURE_CLIENT_ID"] = credentials["azure_client_id"]
-            # OIDC-exchanged credentials use access_token instead of client_secret
-            if "azure_access_token" in credentials:
-                env["AZURE_ACCESS_TOKEN"] = credentials["azure_access_token"]
-            elif "azure_client_secret" in credentials:
-                env["AZURE_CLIENT_SECRET"] = credentials["azure_client_secret"]
-            env["AZURE_TENANT_ID"] = credentials.get("azure_tenant_id", "")
-            env["AZURE_SUBSCRIPTION_ID"] = credentials.get("azure_subscription_id", "")
+        if not manifest:
+            return None
         
-        return env
+        cloud_provider = manifest.get("cloud_provider", "").lower()
+        
+        if cloud_provider == "gcp" and settings.PULUMI_ESC_ENVIRONMENT_GCP:
+            return settings.PULUMI_ESC_ENVIRONMENT_GCP
+        elif cloud_provider == "aws" and settings.PULUMI_ESC_ENVIRONMENT_AWS:
+            return settings.PULUMI_ESC_ENVIRONMENT_AWS
+        elif cloud_provider == "azure" and settings.PULUMI_ESC_ENVIRONMENT_AZURE:
+            return settings.PULUMI_ESC_ENVIRONMENT_AZURE
+        
+        return None
     
     async def _install_dependencies(self, plugin_path: Path):
         """Install Python dependencies for the plugin"""

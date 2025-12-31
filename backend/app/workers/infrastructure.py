@@ -24,7 +24,6 @@ from app.models import (
 from app.services.storage import storage_service
 from app.services.pulumi_service import pulumi_service
 from app.services.crypto import crypto_service
-from app.services.cloud_integrations import CloudIntegrationService
 from app.services.git_service import git_service
 
 
@@ -140,16 +139,30 @@ class InfrastructureProvisionTask:
             plugin_version, deployment, inputs, stack_name, resource_name, plugin_id, version
         )
         
-        # Get credentials via OIDC
-        credentials = self._get_credentials(deployment, plugin_version, user_id)
+        # ESC is required for credential management
+        esc_env = pulumi_service.get_esc_environment(plugin_version.manifest)
+        if not esc_env:
+            cloud_provider = plugin_version.manifest.get("cloud_provider", "unknown").lower()
+            error_msg = f"ESC environment not configured for {cloud_provider}. Please set PULUMI_ESC_ENVIRONMENT_{cloud_provider.upper()} in configuration."
+            self.log_message("ERROR", error_msg)
+            if deployment:
+                try:
+                    deployment.status = DeploymentStatus.FAILED
+                    self.db.add(deployment)
+                    self.db.commit()
+                except Exception as deploy_error:
+                    logger.warning(f"Failed to update deployment status: {deploy_error}")
+            raise Exception(error_msg)
+        
+        self.log_message("INFO", f"ESC environment configured: {esc_env} - using automatic credential management")
         
         # Run Pulumi
-        self.log_message("INFO", f"Executing Pulumi program with credentials: {bool(credentials)}")
+        self.log_message("INFO", f"Executing Pulumi program with ESC environment: {esc_env}")
         result = asyncio.run(pulumi_service.run_pulumi(
             plugin_path=extract_path,
             stack_name=stack_name,
             config=inputs,
-            credentials=credentials,
+            credentials=None,  # ESC handles credentials automatically
             manifest=plugin_version.manifest
         ))
         
@@ -314,66 +327,6 @@ class InfrastructureProvisionTask:
             self.log_message("INFO", f"Extracted plugin ZIP to {extract_path}")
             return extract_path
     
-    def _get_credentials(self, deployment: Optional[Deployment],
-                        plugin_version, user_id: Optional[str]) -> Optional[Dict]:
-        """Get cloud credentials via OIDC"""
-        cloud_provider = plugin_version.manifest.get("cloud_provider", "").lower()
-        
-        if user_id and cloud_provider:
-            try:
-                if cloud_provider == "aws":
-                    self.log_message("INFO", f"Exchanging OIDC token for AWS credentials for user_id: {user_id}...")
-                    credentials = asyncio.run(CloudIntegrationService.get_aws_credentials(
-                        user_id=str(user_id),
-                        duration_seconds=3600
-                    ))
-                    self.log_message("INFO", f"Successfully obtained AWS credentials via OIDC. Has access_key: {'aws_access_key_id' in credentials}, Has session_token: {'aws_session_token' in credentials}")
-                    self.log_message("DEBUG", f"Credential keys: {list(credentials.keys())}")
-                    return credentials
-                
-                elif cloud_provider == "gcp":
-                    self.log_message("INFO", "Exchanging OIDC token for GCP credentials...")
-                    credentials = asyncio.run(CloudIntegrationService.get_gcp_access_token(
-                        user_id=str(user_id)
-                    ))
-                    self.log_message("INFO", "Successfully obtained GCP credentials via OIDC")
-                    return credentials
-                
-                elif cloud_provider == "azure":
-                    self.log_message("INFO", "Exchanging OIDC token for Azure credentials...")
-                    credentials = asyncio.run(CloudIntegrationService.get_azure_token(
-                        user_id=str(user_id)
-                    ))
-                    self.log_message("INFO", "Successfully obtained Azure credentials via OIDC")
-                    return credentials
-                    
-            except Exception as e:
-                self.log_message("ERROR", f"Failed to auto-exchange OIDC credentials: {str(e)}")
-                self.log_message("ERROR", f"Error details: {type(e).__name__}: {str(e)}")
-                self.log_message("ERROR", f"Traceback: {traceback.format_exc()}")
-                
-                if deployment:
-                    try:
-                        deployment.status = DeploymentStatus.FAILED
-                        self.db.add(deployment)
-                        self.db.commit()
-                    except Exception as deploy_error:
-                        logger.warning(f"Failed to update deployment status: {deploy_error}")
-                
-                raise Exception(f"Failed to obtain credentials via OIDC: {str(e)}")
-        
-        elif cloud_provider and not user_id:
-            self.log_message("ERROR", f"Cloud provider '{cloud_provider}' detected but unable to determine user_id for OIDC exchange")
-            if deployment:
-                try:
-                    deployment.status = DeploymentStatus.FAILED
-                    self.db.add(deployment)
-                    self.db.commit()
-                except Exception as deploy_error:
-                    logger.warning(f"Failed to update deployment status: {deploy_error}")
-            raise Exception(f"Cannot provision {cloud_provider} resources without user_id for OIDC token exchange")
-        
-        return None
     
     def _handle_provision_result(self, result: Dict, job: Job, deployment: Optional[Deployment],
                                 inputs: dict, is_update: bool, resource_name: str):
@@ -692,8 +645,17 @@ class InfrastructureDestroyTask:
         # Setup plugin source
         extract_path = self._setup_plugin_source(deployment, plugin_version)
         
-        # Get credentials
-        credentials = self._get_credentials(deployment)
+        # ESC is required for credential management
+        # Create minimal manifest for ESC lookup
+        manifest = {"cloud_provider": deployment.cloud_provider.lower()} if deployment.cloud_provider else None
+        esc_env = pulumi_service.get_esc_environment(manifest)
+        if not esc_env:
+            cloud_provider = deployment.cloud_provider or "unknown"
+            error_msg = f"ESC environment not configured for {cloud_provider}. Please set PULUMI_ESC_ENVIRONMENT_{cloud_provider.upper()} in configuration."
+            self.log_message("ERROR", error_msg)
+            raise Exception(error_msg)
+        
+        self.log_message("INFO", f"ESC environment configured: {esc_env} - using automatic credential management for destroy")
         
         # Run Pulumi destroy
         if not deployment.stack_name:
@@ -708,7 +670,8 @@ class InfrastructureDestroyTask:
             result = asyncio.run(pulumi_service.destroy_stack(
                 plugin_path=extract_path,
                 stack_name=deployment.stack_name,
-                credentials=credentials
+                credentials=None,  # ESC handles credentials automatically
+                cloud_provider=deployment.cloud_provider
             ))
         
         self.log_message("INFO", f"Pulumi destroy completed with status: {result.get('status', 'unknown')}")
@@ -847,44 +810,6 @@ class InfrastructureDestroyTask:
             extract_path = storage_service.extract_plugin(deployment.plugin_id, deployment.version, self.temp_dir)
             self.log_message("INFO", "Plugin extracted successfully")
             return extract_path
-    
-    def _get_credentials(self, deployment: Deployment) -> Optional[Dict]:
-        """Get credentials via OIDC"""
-        if deployment.cloud_provider and deployment.user_id:
-            try:
-                cloud_provider = deployment.cloud_provider.lower()
-                
-                if cloud_provider == "aws":
-                    self.log_message("INFO", "Exchanging OIDC token for AWS credentials")
-                    credentials = asyncio.run(CloudIntegrationService.get_aws_credentials(
-                        user_id=str(deployment.user_id),
-                        duration_seconds=3600
-                    ))
-                    self.log_message("INFO", "Successfully obtained AWS credentials via OIDC")
-                    return credentials
-                
-                elif cloud_provider == "gcp":
-                    self.log_message("INFO", "Exchanging OIDC token for GCP credentials")
-                    credentials = asyncio.run(CloudIntegrationService.get_gcp_access_token(
-                        user_id=str(deployment.user_id)
-                    ))
-                    self.log_message("INFO", "Successfully obtained GCP credentials via OIDC")
-                    return credentials
-                
-                elif cloud_provider == "azure":
-                    self.log_message("INFO", "Exchanging OIDC token for Azure credentials")
-                    credentials = asyncio.run(CloudIntegrationService.get_azure_token(
-                        user_id=str(deployment.user_id)
-                    ))
-                    self.log_message("INFO", "Successfully obtained Azure credentials via OIDC")
-                    return credentials
-                    
-            except Exception as e:
-                logger.error(f"Failed to exchange OIDC credentials: {str(e)}")
-                self.log_message("ERROR", f"Failed to exchange OIDC credentials: {str(e)}")
-                raise Exception(f"Failed to obtain credentials via OIDC: {str(e)}")
-        
-        return None
     
     def _create_success_notification(self, deployment: Deployment):
         """Create success notification"""

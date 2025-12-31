@@ -26,7 +26,14 @@ jobs:
 
     strategy:
       matrix:
-        component: [backend, frontend]
+        include:
+          - component: backend
+            build_args: ""
+            no_cache: false
+          - component: frontend
+            build_args: |
+              VITE_API_URL=https://foundry-idp.com
+            no_cache: true
 
     steps:
       - name: Checkout code
@@ -48,24 +55,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ matrix.component == 'backend' && env.BACKEND_IMAGE_NAME || env.FRONTEND_IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build and push Docker image for ${{ matrix.component }}
         uses: docker/build-push-action@v5
         with:
           context: ./${{ matrix.component }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            ${{ matrix.component == 'frontend' && 'VITE_API_URL=https://api.foundry-idp.com' || '' }}
+          no-cache: ${{ matrix.no_cache }}
+          build-args: ${{ matrix.build_args }}
 
       - name: Image digest for ${{ matrix.component }}
         run: echo "${{ steps.meta.outputs.tags }}"

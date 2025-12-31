@@ -12,7 +12,6 @@ from fastapi import HTTPException
 from botocore.exceptions import ClientError
 
 from app.config import settings
-from app.services.cloud_integrations import CloudIntegrationService
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +22,16 @@ class AWSCostService:
     @staticmethod
     async def _get_aws_credentials(user_id: str) -> Dict[str, Any]:
         """Get AWS credentials for API calls"""
-        try:
-            credentials = await CloudIntegrationService.get_aws_credentials(user_id)
-            return credentials
-        except Exception as e:
-            logger.error(f"Failed to get AWS credentials: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to authenticate with AWS: {str(e)}"
-            )
+        # NOTE: This service needs to be updated to use alternative authentication
+        # CloudIntegrationService has been removed. Options:
+        # 1. Use IAM user access keys stored securely
+        # 2. Use Pulumi ESC to get credentials
+        # 3. Use AWS IAM roles with temporary credentials
+        raise HTTPException(
+            status_code=501,
+            detail="AWS cost service authentication is not implemented. CloudIntegrationService has been removed. "
+                   "Please update this service to use alternative authentication (IAM keys, Pulumi ESC, or IAM roles)."
+        )
 
     @staticmethod
     async def estimate_ec2_cost(

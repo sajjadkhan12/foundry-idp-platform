@@ -135,8 +135,11 @@ async def list_plugins(
             # Handle Icon URL
             icon_path = manifest.get('icon')
             if icon_path:
-                # Use Path for reliable file checking
-                storage_root = Path("storage")
+                # Use absolute path for reliable file checking
+                # Get backend directory (parent of app directory)
+                # crud.py is at app/api/plugins/crud.py, so go up 4 levels to reach backend root
+                backend_dir = Path(__file__).parent.parent.parent.parent
+                storage_root = backend_dir / "storage"
                 version_path = storage_root / "plugins" / plugin.id / latest_version.version
                 
                 # Check multiple possible locations (after flattening, files should be in extracted/)

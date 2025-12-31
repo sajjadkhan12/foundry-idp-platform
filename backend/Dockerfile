@@ -9,38 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     libpq-dev \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
-COPY pyproject.toml ./
+# Install uv using pip (most reliable method in Python images)
+RUN pip install --no-cache-dir uv
 
-# Install build dependencies and project dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    SQLAlchemy \
-    asyncpg \
-    "pydantic[email]" \
-    python-dotenv \
-    celery \
-    pydantic-settings \
-    bcrypt \
-    "python-jose[cryptography]" \
-    greenlet \
-    python-multipart \
-    redis \
-    psycopg2-binary \
-    casbin \
-    casbin-sqlalchemy-adapter \
-    pulumi \
-    cryptography \
-    pyyaml \
-    "pyjwt[crypto]" \
-    boto3 \
-    httpx \
-    requests \
-    "GitPython>=3.1.40"
+# Copy dependency files and source for editable install
+COPY pyproject.toml ./
+COPY app ./app
+
+# Install dependencies using uv (installs to system Python)
+RUN uv pip install --system --no-cache -e .
 
 # Production stage
 FROM python:3.11-slim

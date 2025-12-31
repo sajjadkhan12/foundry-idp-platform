@@ -13,3 +13,6 @@ env/
 static/avatars/
 logs/code/
 *.log
+
+storage/
+!storage/.gitkeep
