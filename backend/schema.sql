@@ -366,7 +366,7 @@ CREATE TABLE jobs (
     id VARCHAR PRIMARY KEY,
     plugin_version_id INTEGER REFERENCES plugin_versions(id) NOT NULL,
     deployment_id UUID REFERENCES deployments(id),
-    status job_status_enum DEFAULT 'pending',
+    status jobstatus DEFAULT 'pending',
     triggered_by VARCHAR NOT NULL,
     inputs JSONB DEFAULT '{}',
     outputs JSONB,
