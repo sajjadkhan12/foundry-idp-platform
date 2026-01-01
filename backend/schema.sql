@@ -1,11 +1,7 @@
 -- DevPlatform IDP Database Schema
 -- This schema creates all required tables for the application
-
--- Create database
-CREATE DATABASE devplatform_idp;
-
--- Connect to the database
-\c devplatform_idp;
+-- Note: For Docker, the database is created automatically via POSTGRES_DB
+-- For manual setup, connect to the database first: psql -U postgres -d devplatform_idp
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -60,15 +56,17 @@ CREATE TABLE users (
     hashed_password VARCHAR(255) NOT NULL,
     full_name VARCHAR(255),
     avatar_url VARCHAR(500),
-    is_active BOOLEAN DEFAULT TRUE,
+    is_active BOOLEAN NOT NULL,
     -- Organization
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL,
+    -- Active Business Unit (user preference) - constraint added after business_units table
+    active_business_unit_id UUID,
     -- Cloud Identity Bindings
     aws_role_arn VARCHAR(255),
     gcp_service_account VARCHAR(255),
     azure_client_id VARCHAR(255),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
 -- Refresh tokens table
@@ -163,25 +161,27 @@ CREATE TABLE cloud_credentials (
 
 -- Plugin access control tables
 -- Table to track which users have been granted access to locked plugins
+-- Note: business_unit_id foreign key constraint added after business_units table is created
 CREATE TABLE plugin_access (
     id SERIAL PRIMARY KEY,
     plugin_id VARCHAR NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL,
+    business_unit_id UUID,  -- Foreign key constraint added later
     granted_by UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
-    granted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    granted_at TIMESTAMP WITH TIME ZONE NOT NULL,
     UNIQUE(plugin_id, user_id, business_unit_id)
 );
 
 -- Table to track access requests for locked plugins
 -- Note: status is stored as VARCHAR(20), valid values: 'pending', 'approved', 'rejected'
+-- Note: business_unit_id foreign key constraint added after business_units table is created
 CREATE TABLE plugin_access_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     plugin_id VARCHAR NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL,
-    status VARCHAR(20) DEFAULT 'pending' NOT NULL,
-    requested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    business_unit_id UUID,  -- Foreign key constraint added later
+    status VARCHAR(20) NOT NULL,
+    requested_at TIMESTAMP WITH TIME ZONE NOT NULL,
     reviewed_at TIMESTAMP WITH TIME ZONE,
     reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
     note TEXT
@@ -203,6 +203,34 @@ CREATE TABLE business_units (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(slug, organization_id)
 );
+
+-- Add foreign key constraints for business_units references
+-- (These columns were created without constraints since business_units table didn't exist yet)
+
+-- Add foreign key constraints for business_units references
+-- (These columns were created without constraints since business_units table didn't exist yet)
+-- Constraint names match the pattern used by SQLAlchemy: {table}_{column}_fkey
+
+-- Add foreign key constraint for active_business_unit_id in users table
+ALTER TABLE users 
+ADD CONSTRAINT users_active_business_unit_id_fkey 
+FOREIGN KEY (active_business_unit_id) 
+REFERENCES business_units(id) 
+ON DELETE SET NULL;
+
+-- Add foreign key constraint for business_unit_id in plugin_access table
+ALTER TABLE plugin_access 
+ADD CONSTRAINT plugin_access_business_unit_id_fkey 
+FOREIGN KEY (business_unit_id) 
+REFERENCES business_units(id) 
+ON DELETE SET NULL;
+
+-- Add foreign key constraint for business_unit_id in plugin_access_requests table
+ALTER TABLE plugin_access_requests 
+ADD CONSTRAINT plugin_access_requests_business_unit_id_fkey 
+FOREIGN KEY (business_unit_id) 
+REFERENCES business_units(id) 
+ON DELETE SET NULL;
 
 -- Business unit members table (many-to-many relationship)
 -- Note: Uses role_id foreign key to roles table instead of enum
@@ -338,7 +366,7 @@ CREATE TABLE jobs (
     id VARCHAR PRIMARY KEY,
     plugin_version_id INTEGER REFERENCES plugin_versions(id) NOT NULL,
     deployment_id UUID REFERENCES deployments(id),
-    status job_status_enum DEFAULT 'pending',
+    status jobstatus DEFAULT 'pending',
     triggered_by VARCHAR NOT NULL,
     inputs JSONB DEFAULT '{}',
     outputs JSONB,
@@ -399,9 +427,10 @@ CREATE INDEX idx_organizations_name ON organizations(name);
 CREATE INDEX idx_organizations_slug ON organizations(slug);
 
 -- Users indexes
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_username ON users(username);
-CREATE INDEX idx_users_organization_id ON users(organization_id);
+CREATE UNIQUE INDEX ix_users_email ON users(email);
+CREATE UNIQUE INDEX ix_users_username ON users(username);
+CREATE INDEX ix_users_organization_id ON users(organization_id);
+CREATE INDEX ix_users_active_business_unit_id ON users(active_business_unit_id);
 
 -- Refresh tokens indexes
 CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
@@ -424,10 +453,11 @@ CREATE INDEX idx_permissions_metadata_slug ON permissions_metadata(slug);
 CREATE INDEX idx_plugin_versions_plugin_id ON plugin_versions(plugin_id);
 CREATE INDEX idx_plugin_access_plugin_id ON plugin_access(plugin_id);
 CREATE INDEX idx_plugin_access_user_id ON plugin_access(user_id);
-CREATE INDEX idx_plugin_access_business_unit_id ON plugin_access(business_unit_id);
+CREATE INDEX ix_plugin_access_business_unit_id ON plugin_access(business_unit_id);
 CREATE INDEX idx_plugin_access_requests_plugin_id ON plugin_access_requests(plugin_id);
 CREATE INDEX idx_plugin_access_requests_user_id ON plugin_access_requests(user_id);
 CREATE INDEX idx_plugin_access_requests_status ON plugin_access_requests(status);
+CREATE INDEX ix_plugin_access_requests_business_unit_id ON plugin_access_requests(business_unit_id);
 
 -- Job indexes
 CREATE INDEX idx_jobs_plugin_version_id ON jobs(plugin_version_id);

@@ -20,7 +20,10 @@ from app.schemas.plugins import (
 from fastapi import Request
 from typing import Optional
 import uuid
-from app.api.deps import get_current_user, is_allowed, is_allowed_bu, get_current_active_superuser, get_active_business_unit, is_platform_admin
+from app.api.deps.auth import get_current_user, get_current_active_superuser
+from app.api.deps.permissions import is_allowed, is_allowed_bu
+from app.api.deps.business_unit import get_active_business_unit
+from app.api.deps.helpers import is_platform_admin
 
 router = APIRouter(prefix="/provision", tags=["Provisioning"])
 
@@ -36,7 +39,7 @@ async def provision(
     Returns immediately with job ID for async execution
     Requires: plugins:provision permission + environment-specific permission
     """
-    from app.api.deps import get_org_aware_enforcer
+    from app.api.deps.enforcer import get_org_aware_enforcer
     from app.logger import logger
     
     try:
@@ -394,7 +397,7 @@ async def list_jobs(
     from datetime import datetime
     from sqlalchemy import func
     from app.models.deployment import Deployment
-    from app.api.deps import get_org_aware_enforcer
+    from app.api.deps.enforcer import get_org_aware_enforcer
     from app.core.casbin import get_enforcer
     from app.core.organization import get_user_organization, get_organization_domain
     from app.core.authorization import get_user_platform_roles

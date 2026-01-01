@@ -13,7 +13,7 @@ from app.models.deployment import Deployment, DeploymentStatus, DeploymentHistor
 from app.models.plugins import Job, JobStatus, JobLog, PluginVersion
 from app.models.rbac import User
 from app.schemas.deployment import DeploymentCreate, DeploymentUpdateRequest
-from app.api.deps import OrgAwareEnforcer
+from app.api.deps.enforcer import OrgAwareEnforcer
 from app.core.utils import get_or_404, raise_permission_denied
 from app.logger import logger
 from app.config import settings

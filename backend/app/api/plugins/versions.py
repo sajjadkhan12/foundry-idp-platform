@@ -7,7 +7,7 @@ from typing import List
 from app.database import get_db
 from app.models import PluginVersion, User
 from app.schemas.plugins import PluginVersionResponse
-from app.api.deps import get_current_user
+from app.api.deps.auth import get_current_user
 from app.core.utils import get_or_404
 
 router = APIRouter()

@@ -14,7 +14,7 @@ from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.rbac import User
 from app.schemas.audit import AuditLogResponse, AuditLogListResponse
-from app.api.deps import is_allowed
+from app.api.deps.permissions import is_allowed
 from app.logger import logger
 
 router = APIRouter(prefix="/audit-logs", tags=["audit"])

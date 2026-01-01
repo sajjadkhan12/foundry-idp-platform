@@ -1,0 +1,214 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: foundry-idp-postgres
+    environment:
+      POSTGRES_USER: default_user
+      POSTGRES_PASSWORD: default_password
+      POSTGRES_DB: devplatform_idp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U default_user -d devplatform_idp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - foundry-idp-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: foundry-idp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - foundry-idp-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: foundry-idp-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+      
+      # Security
+      SECRET_KEY: ${SECRET_KEY:-change-this-secret-key-in-production}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      
+      # Admin credentials
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@foundry-idp.com}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin} #change this in production
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123} #change this in production
+      
+      # Plugin system
+      PLUGINS_STORAGE_PATH: /app/storage/plugins
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      PULUMI_CONFIG_PASSPHRASE: ${PULUMI_CONFIG_PASSPHRASE:-default-passphrase}
+      PULUMI_ACCESS_TOKEN: ${PULUMI_ACCESS_TOKEN:-}
+      PULUMI_ORG: ${PULUMI_ORG:-}
+      PULUMI_ESC_ENVIRONMENT_GCP: ${PULUMI_ESC_ENVIRONMENT_GCP:-}
+      PULUMI_ESC_ENVIRONMENT_AWS: ${PULUMI_ESC_ENVIRONMENT_AWS:-}
+      PULUMI_ESC_ENVIRONMENT_AZURE: ${PULUMI_ESC_ENVIRONMENT_AZURE:-}
+      PULUMI_USE_ESC: ${PULUMI_USE_ESC:-true}
+      
+      # GitOps Configuration
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GIT_WORK_DIR: /app/storage/git-repos
+      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-https://github.com/sajjadkhan-academy/idp-templates.git}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      MICROSERVICE_REPO_ORG: ${MICROSERVICE_REPO_ORG:-}
+      
+      # Celery Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    volumes:
+      - backend_storage:/app/storage
+      - backend_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: foundry-idp-worker
+    command: celery -A app.workers worker --loglevel=info --concurrency=4
+    environment:
+      # Database (worker code converts asyncpg to psycopg2 internally)
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+      
+      # Security
+      SECRET_KEY: ${SECRET_KEY:-change-this-secret-key-in-production}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      
+      # Admin credentials
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@foundry-idp.com}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      
+      # Plugin system
+      PLUGINS_STORAGE_PATH: /app/storage/plugins
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      PULUMI_CONFIG_PASSPHRASE: ${PULUMI_CONFIG_PASSPHRASE:-default-passphrase}
+      PULUMI_ACCESS_TOKEN: ${PULUMI_ACCESS_TOKEN:-}
+      PULUMI_ORG: ${PULUMI_ORG:-}
+      PULUMI_ESC_ENVIRONMENT_GCP: ${PULUMI_ESC_ENVIRONMENT_GCP:-}
+      PULUMI_ESC_ENVIRONMENT_AWS: ${PULUMI_ESC_ENVIRONMENT_AWS:-}
+      PULUMI_ESC_ENVIRONMENT_AZURE: ${PULUMI_ESC_ENVIRONMENT_AZURE:-}
+      PULUMI_USE_ESC: ${PULUMI_USE_ESC:-true}
+      
+      # GitOps Configuration
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GIT_WORK_DIR: /app/storage/git-repos
+      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-https://github.com/sajjadkhan-academy/idp-templates.git}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      MICROSERVICE_REPO_ORG: ${MICROSERVICE_REPO_ORG:-}
+      
+      # Celery Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      
+      # AWS Configuration
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      
+      # GCP Configuration
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GCP_BILLING_ACCOUNT_ID: ${GCP_BILLING_ACCOUNT_ID:-}
+      
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    volumes:
+      - backend_storage:/app/storage
+      - backend_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+    container_name: foundry-idp-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_storage:
+    driver: local
+  backend_logs:
+    driver: local
+
+networks:
+  foundry-idp-network:
+    driver: bridge

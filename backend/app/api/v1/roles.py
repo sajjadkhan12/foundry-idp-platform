@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.api.deps import get_current_active_superuser, is_allowed, get_db, OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.auth import get_current_active_superuser
+from app.api.deps.permissions import is_allowed
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.database import get_db
 from app.schemas.rbac import RoleCreate, RoleUpdate, RoleResponse, PermissionResponse
 from app.models.rbac import Role, PermissionMetadata
 from app.core.permission_registry import parse_permission_slug, get_permission, find_permission_by_resource_action

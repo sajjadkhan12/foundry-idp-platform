@@ -9,7 +9,9 @@ from uuid import UUID
 from fastapi import Body
 
 from app.database import get_db
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer, get_active_business_unit
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.business_unit import get_active_business_unit
 from app.models.rbac import User
 from app.models.deployment import Deployment
 from typing import Optional

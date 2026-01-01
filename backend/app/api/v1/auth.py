@@ -26,71 +26,19 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 async def get_user_with_roles(user: User, db: AsyncSession) -> UserResponse:
     """
     Helper to convert User model to UserResponse with Casbin roles.
-    Filters roles to ensure only actual roles from the database are returned (not group names).
+    Uses centralized response_helpers to avoid duplication.
     """
-    # Use OrgAwareEnforcer to properly handle organization domain
-    from app.api.deps import get_org_aware_enforcer
-    from app.core.organization import get_user_organization, get_organization_domain
+    from app.api.deps.helpers import get_org_domain
+    from app.utils.response_helpers import user_to_response as helper_user_to_response
+    from app.core.casbin import get_enforcer
+    from app.api.deps.enforcer import OrgAwareEnforcer
     
-    # Get organization and set up enforcer with proper domain
-    org = await get_user_organization(user, db)
-    org_domain = get_organization_domain(org)
+    # Get org domain and create OrgAwareEnforcer
+    org_domain = await get_org_domain(user, db)
+    base_enforcer = get_enforcer()
+    enforcer = OrgAwareEnforcer(base_enforcer, org_domain)
     
-    # Get the enforcer (this will be a MultiTenantEnforcerWrapper)
-    enforcer = get_enforcer()
-    
-    # Set the organization domain on the enforcer if it supports it
-    if hasattr(enforcer, 'set_org_domain'):
-        enforcer.set_org_domain(org_domain)
-    
-    # Get roles for user within their organization
-    # Pass org_domain explicitly to ensure correct domain is used
-    if hasattr(enforcer, 'get_roles_for_user'):
-        # MultiTenantEnforcerWrapper.get_roles_for_user accepts optional domain parameter
-        roles = enforcer.get_roles_for_user(str(user.id), org_domain)
-    else:
-        # Base Casbin Enforcer, need to use get_implicit_roles_for_user with domain
-        try:
-            implicit_roles = enforcer.get_implicit_roles_for_user(str(user.id), org_domain)
-            roles = []
-            for role_info in implicit_roles:
-                if isinstance(role_info, (list, tuple)) and len(role_info) > 0:
-                    roles.append(role_info[0])
-                else:
-                    roles.append(role_info)
-            roles = list(set(roles))
-        except Exception:
-            roles = []
-    
-    # Filter roles to ensure they exist in the database (exclude group names)
-    if roles:
-        # Get all valid role names from database
-        result = await db.execute(select(Role.name))
-        valid_role_names = {role_name for role_name in result.scalars().all()}
-        
-        # Filter roles to only include valid roles
-        filtered_roles = [role for role in roles if role in valid_role_names]
-        
-        # Remove duplicates
-        roles = list(set(filtered_roles))
-    else:
-        roles = []
-    
-    # Check if user is platform admin
-    # Create OrgAwareEnforcer with proper org_domain for is_platform_admin check
-    from app.api.deps import is_platform_admin, OrgAwareEnforcer
-    from app.core.casbin import get_enforcer as get_base_enforcer
-    base_enforcer = get_base_enforcer()
-    if hasattr(base_enforcer, 'set_org_domain'):
-        base_enforcer.set_org_domain(org_domain)
-    # Wrap in OrgAwareEnforcer to ensure org_domain is properly handled
-    org_aware_enforcer = OrgAwareEnforcer(base_enforcer, org_domain)
-    user_is_admin = await is_platform_admin(user, db, org_aware_enforcer)
-    
-    user_response = UserResponse.model_validate(user)
-    user_response.roles = roles
-    user_response.is_admin = user_is_admin
-    return user_response
+    return await helper_user_to_response(user, enforcer, db, include_admin_check=True)
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
@@ -135,7 +83,7 @@ async def login(
         )
     
     if not user.is_active:
-        logger.warning(f"Login attempt for inactive user: {login_data.email} from IP: {client_ip}")
+        logger.warning(f"Login attempt for inactive user: {login_data.identifier} from IP: {client_ip}")
         raise HTTPException(status_code=400, detail="Inactive user")
     
     # Log successful login

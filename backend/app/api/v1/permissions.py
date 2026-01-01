@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends
 from typing import List, Dict, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.api.deps import is_allowed, OrgAwareEnforcer, get_org_aware_enforcer, get_db
+from app.api.deps.permissions import is_allowed
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
+from app.database import get_db
 from app.schemas.rbac import PermissionResponse
 from app.models.rbac import PermissionMetadata
 from app.core.permission_registry import PERMISSIONS_BY_SLUG, get_permission, parse_permission_slug

@@ -9,7 +9,10 @@ from typing import List
 import uuid
 
 from app.database import get_db
-from app.api.deps import get_current_user, is_allowed_bu, get_active_business_unit, is_platform_admin
+from app.api.deps.auth import get_current_user
+from app.api.deps.permissions import is_allowed_bu
+from app.api.deps.business_unit import get_active_business_unit
+from app.api.deps.helpers import is_platform_admin
 from app.models.rbac import User
 from app.models.business_unit import BusinessUnit, BusinessUnitGroup, BusinessUnitGroupMember, BusinessUnitMember
 from app.models.rbac import Role

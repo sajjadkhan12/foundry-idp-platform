@@ -14,7 +14,8 @@ from app.models import Plugin, PluginVersion, User
 from app.schemas.plugins import PluginVersionResponse
 from app.services.storage import storage_service
 from app.services.plugin_validator import plugin_validator
-from app.api.deps import get_current_user, OrgAwareEnforcer, get_org_aware_enforcer
+from app.api.deps.auth import get_current_user
+from app.api.deps.enforcer import OrgAwareEnforcer, get_org_aware_enforcer
 from app.logger import logger
 from app.config import settings
 

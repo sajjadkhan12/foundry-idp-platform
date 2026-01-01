@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, MoreVertical, User as UserIcon, Lock, CheckCircle2, XCircle, Edit2, Save, X, Trash2, Users, AlertCircle, Loader } from 'lucide-react';
+import { Search, User as UserIcon, Lock, CheckCircle2, XCircle, Edit2, Save, Trash2, AlertCircle, Loader } from 'lucide-react';
 import api from '../services/api';
-import { useAuth } from '../contexts/AuthContext';
 import { API_URL } from '../constants/api';
 import { appLogger } from '../utils/logger';
 import { Pagination } from '../components/Pagination';
 import { PasswordStrength } from '../components/PasswordStrength';
+import { Modal } from '../components/common/Modal';
+import { ConfirmDialog } from '../components/common/ConfirmDialog';
+import { useDebounce, usePagination, useModal } from '../hooks';
 
 interface User {
     id: string;
@@ -32,37 +34,48 @@ export const UsersPage: React.FC = () => {
     const [loadingRoles, setLoadingRoles] = useState(true);
     const [search, setSearch] = useState('');
     const [roleFilter, setRoleFilter] = useState('');
-    const [selectedUser, setSelectedUser] = useState<User | null>(null);
-    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+    const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+    
+    // Use custom hooks
+    const debouncedSearch = useDebounce(search, 300);
+    const pagination = usePagination(50);
+    const createModal = useModal();
+    const editModal = useModal<User>();
+    const deleteModal = useModal<User>();
+    
     const [editForm, setEditForm] = useState({
         email: '',
         full_name: '',
         password: '',
         is_active: true
     });
-    const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
-    const [currentPage, setCurrentPage] = useState(1);
-    const [itemsPerPage, setItemsPerPage] = useState(50);
-    const [totalItems, setTotalItems] = useState(0);
+    const [createForm, setCreateForm] = useState({
+        email: '',
+        full_name: '',
+        password: ''
+    });
+    const [createError, setCreateError] = useState<string | null>(null);
+    const [isCreating, setIsCreating] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     const fetchUsers = async () => {
         setLoading(true);
         try {
-            const skip = (currentPage - 1) * itemsPerPage;
             const response = await api.listUsers({ 
-                search, 
+                search: debouncedSearch, 
                 role: roleFilter,
-                skip,
-                limit: itemsPerPage
+                skip: pagination.skip,
+                limit: pagination.itemsPerPage
             });
             
             // Handle both old format (array) and new format (object with items/total)
             if (Array.isArray(response)) {
                 setUsers(response);
-                setTotalItems(response.length);
+                pagination.setTotalItems(response.length);
             } else {
                 setUsers(response.items || []);
-                setTotalItems(response.total || 0);
+                pagination.setTotalItems(response.total || 0);
             }
         } catch (error) {
             appLogger.error('Failed to fetch users:', error);
@@ -84,7 +97,7 @@ export const UsersPage: React.FC = () => {
             }
         } catch (error) {
             appLogger.error('Failed to fetch roles:', error);
-            setRoles([]); // Ensure roles is always an array
+            setRoles([]);
         } finally {
             setLoadingRoles(false);
         }
@@ -95,32 +108,28 @@ export const UsersPage: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        const debounce = setTimeout(() => {
-            setCurrentPage(1); // Reset to first page when search/filter changes
-            fetchUsers();
-        }, 300);
-        return () => clearTimeout(debounce);
-    }, [search, roleFilter]);
+        pagination.resetPage();
+    }, [debouncedSearch, roleFilter]);
 
     useEffect(() => {
         fetchUsers();
-    }, [currentPage, itemsPerPage]);
+    }, [pagination.currentPage, pagination.itemsPerPage, debouncedSearch, roleFilter]);
 
     const handleEditClick = (user: User) => {
-        setSelectedUser(user);
         setEditForm({
             email: user.email,
             full_name: user.full_name || '',
             password: '',
             is_active: user.is_active
         });
-        setIsEditModalOpen(true);
+        editModal.open(user);
         setMessage(null);
     };
 
     const handleSaveUser = async () => {
-        if (!selectedUser) return;
+        if (!editModal.data) return;
 
+        setIsSaving(true);
         try {
             const updateData: any = {
                 email: editForm.email,
@@ -131,29 +140,23 @@ export const UsersPage: React.FC = () => {
             if (editForm.password) {
                 if (editForm.password.length < 8) {
                     setMessage({ type: 'error', text: 'Password must be at least 8 characters' });
+                    setIsSaving(false);
                     return;
                 }
                 updateData.password = editForm.password;
             }
 
-            await api.adminUpdateUser(selectedUser.id, updateData);
+            await api.adminUpdateUser(editModal.data.id, updateData);
 
             setMessage({ type: 'success', text: 'User updated successfully' });
             fetchUsers();
-            setTimeout(() => setIsEditModalOpen(false), 1500);
+            setTimeout(() => editModal.close(), 1500);
         } catch (error: any) {
             setMessage({ type: 'error', text: error.message || 'Failed to update user' });
+        } finally {
+            setIsSaving(false);
         }
     };
-
-    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-    const [createForm, setCreateForm] = useState({
-        email: '',
-        full_name: '',
-        password: ''
-    });
-    const [createError, setCreateError] = useState<string | null>(null);
-    const [isCreating, setIsCreating] = useState(false);
 
     const handleCreateUser = async () => {
         setCreateError(null);
@@ -169,15 +172,15 @@ export const UsersPage: React.FC = () => {
                 ...createForm
             });
             setMessage({ type: 'success', text: 'User created successfully' });
-            setIsCreateModalOpen(false);
+            createModal.close();
             setCreateForm({ email: '', full_name: '', password: '' });
             setCreateError(null);
 
             // Clear filters and refresh the user list
             setSearch('');
             setRoleFilter('');
-            setCurrentPage(1); // Reset to first page
-            await fetchUsers(); // Explicitly fetch users to show the new user
+            pagination.resetPage();
+            await fetchUsers();
         } catch (error: any) {
             // Parse error message from backend
             let errorMessage = 'Failed to create user';
@@ -194,27 +197,21 @@ export const UsersPage: React.FC = () => {
         }
     };
 
-    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-    const [userToDelete, setUserToDelete] = useState<User | null>(null);
-
-    const handleDeleteUser = (user: User) => {
-        setUserToDelete(user);
-        setIsDeleteModalOpen(true);
-    };
-
     const confirmDeleteUser = async () => {
-        if (!userToDelete) return;
+        if (!deleteModal.data) return;
 
+        setIsDeleting(true);
         try {
-            await api.deleteUser(userToDelete.id);
+            await api.deleteUser(deleteModal.data.id);
             setMessage({ type: 'success', text: 'User deleted successfully' });
-            setIsDeleteModalOpen(false);
-            setUserToDelete(null);
+            deleteModal.close();
             // Small delay to ensure backend processing is complete
             await new Promise(resolve => setTimeout(resolve, 200));
             await fetchUsers();
         } catch (error: any) {
             setMessage({ type: 'error', text: error.message || 'Failed to delete user' });
+        } finally {
+            setIsDeleting(false);
         }
     };
 
@@ -227,7 +224,7 @@ export const UsersPage: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-3">
                     <button
-                        onClick={() => setIsCreateModalOpen(true)}
+                        onClick={() => createModal.open()}
                         className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 flex items-center gap-2 text-sm font-medium"
                     >
                         <UserIcon className="w-4 h-4" /> Create User
@@ -303,7 +300,6 @@ export const UsersPage: React.FC = () => {
                                                         alt={user.username}
                                                         className="w-10 h-10 rounded-full object-cover ring-2 ring-gray-100 dark:ring-gray-800"
                                                         onError={(e) => {
-                                                            // Hide image on error
                                                             (e.target as HTMLImageElement).style.display = 'none';
                                                         }}
                                                     />
@@ -322,7 +318,6 @@ export const UsersPage: React.FC = () => {
                                             <div className="flex flex-wrap gap-1">
                                                 {user.roles && user.roles.length > 0 ? (
                                                     user.roles.map((roleName) => {
-                                                        // Check if this role is a platform role or BU role
                                                         const roleInfo = roles.find(r => r.name === roleName);
                                                         const isPlatformRole = roleInfo?.is_platform_role === true;
                                                         
@@ -336,7 +331,6 @@ export const UsersPage: React.FC = () => {
                                                                 }`}
                                                             >
                                                                 <UserIcon className="w-3 h-3" />
-                                                                {/* Capitalize first letter of role name */}
                                                                 {roleName.charAt(0).toUpperCase() + roleName.slice(1).replace(/-/g, ' ')}
                                                                 {isPlatformRole ? (
                                                                     <span className="ml-1 text-[10px] opacity-75">(Platform)</span>
@@ -373,7 +367,7 @@ export const UsersPage: React.FC = () => {
                                                     <Edit2 className="w-4 h-4" />
                                                 </button>
                                                 <button
-                                                    onClick={() => handleDeleteUser(user)}
+                                                    onClick={() => deleteModal.open(user)}
                                                     className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
                                                     title="Delete User"
                                                 >
@@ -389,19 +383,18 @@ export const UsersPage: React.FC = () => {
                 </div>
                 
                 {/* Pagination */}
-                {totalItems > 0 && (
+                {pagination.totalItems > 0 && (
                     <Pagination
-                        currentPage={currentPage}
-                        totalPages={Math.ceil(totalItems / itemsPerPage)}
-                        totalItems={totalItems}
-                        itemsPerPage={itemsPerPage}
+                        currentPage={pagination.currentPage}
+                        totalPages={pagination.totalPages}
+                        totalItems={pagination.totalItems}
+                        itemsPerPage={pagination.itemsPerPage}
                         onPageChange={(page) => {
-                            setCurrentPage(page);
+                            pagination.setPage(page);
                             window.scrollTo({ top: 0, behavior: 'smooth' });
                         }}
                         onItemsPerPageChange={(newItemsPerPage) => {
-                            setItemsPerPage(newItemsPerPage);
-                            setCurrentPage(1);
+                            pagination.setItemsPerPage(newItemsPerPage);
                         }}
                         showItemsPerPage={true}
                     />
@@ -409,231 +402,212 @@ export const UsersPage: React.FC = () => {
             </div>
 
             {/* Create User Modal */}
-            {isCreateModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-xl w-full max-w-md border border-gray-200 dark:border-gray-800 animate-in fade-in zoom-in-95 duration-200">
-                        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-800">
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Create New User</h3>
-                            <button onClick={() => setIsCreateModalOpen(false)} className="text-gray-400 hover:text-gray-500">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-
-                        <div className="p-6 space-y-4">
-                            {createError && (
-                                <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 flex items-start gap-2">
-                                    <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
-                                    <div className="flex-1">
-                                        <p className="text-sm font-medium text-red-800 dark:text-red-300">Error</p>
-                                        <p className="text-sm text-red-700 dark:text-red-400 mt-1">{createError}</p>
-                                    </div>
-                                    <button
-                                        onClick={() => setCreateError(null)}
-                                        className="text-red-400 hover:text-red-600 flex-shrink-0"
-                                    >
-                                        <X className="w-4 h-4" />
-                                    </button>
-                                </div>
+            <Modal
+                isOpen={createModal.isOpen}
+                onClose={createModal.close}
+                title="Create New User"
+                footer={
+                    <>
+                        <button
+                            onClick={createModal.close}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={handleCreateUser}
+                            disabled={isCreating}
+                            className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm shadow-orange-500/20 flex items-center gap-2"
+                        >
+                            {isCreating ? (
+                                <>
+                                    <Loader className="w-4 h-4 animate-spin" /> Creating...
+                                </>
+                            ) : (
+                                <>
+                                    <UserIcon className="w-4 h-4" /> Create User
+                                </>
                             )}
-                            
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address</label>
-                                <input
-                                    type="email"
-                                    value={createForm.email}
-                                    onChange={(e) => {
-                                        setCreateForm({ ...createForm, email: e.target.value });
-                                        setCreateError(null);
-                                    }}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                                    placeholder="user@example.com"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name</label>
-                                <input
-                                    type="text"
-                                    value={createForm.full_name}
-                                    onChange={(e) => setCreateForm({ ...createForm, full_name: e.target.value })}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                                    placeholder="John Doe"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Password</label>
-                                <input
-                                    type="password"
-                                    value={createForm.password}
-                                    onChange={(e) => {
-                                        setCreateForm({ ...createForm, password: e.target.value });
-                                        setCreateError(null);
-                                    }}
-                                    className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 ${
-                                        createError ? 'border-red-300 dark:border-red-700 focus:ring-red-500' : 'border-gray-300 dark:border-gray-700 focus:ring-orange-500'
-                                    }`}
-                                    placeholder="••••••••"
-                                />
-                                <PasswordStrength password={createForm.password} />
-                            </div>
+                        </button>
+                    </>
+                }
+            >
+                {createError && (
+                    <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 flex items-start gap-2 mb-4">
+                        <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                            <p className="text-sm font-medium text-red-800 dark:text-red-300">Error</p>
+                            <p className="text-sm text-red-700 dark:text-red-400 mt-1">{createError}</p>
                         </div>
-
-                        <div className="flex justify-end gap-3 p-6 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 rounded-b-xl">
-                            <button
-                                onClick={() => setIsCreateModalOpen(false)}
-                                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleCreateUser}
-                                disabled={isCreating}
-                                className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm shadow-orange-500/20 flex items-center gap-2"
-                            >
-                                {isCreating ? (
-                                    <>
-                                        <Loader className="w-4 h-4 animate-spin" /> Creating...
-                                    </>
-                                ) : (
-                                    <>
-                                        <UserIcon className="w-4 h-4" /> Create User
-                                    </>
-                                )}
-                            </button>
-                        </div>
+                        <button
+                            onClick={() => setCreateError(null)}
+                            className="text-red-400 hover:text-red-600 flex-shrink-0"
+                        >
+                            <AlertCircle className="w-4 h-4" />
+                        </button>
+                    </div>
+                )}
+                
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address</label>
+                        <input
+                            type="email"
+                            value={createForm.email}
+                            onChange={(e) => {
+                                setCreateForm({ ...createForm, email: e.target.value });
+                                setCreateError(null);
+                            }}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="user@example.com"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name</label>
+                        <input
+                            type="text"
+                            value={createForm.full_name}
+                            onChange={(e) => setCreateForm({ ...createForm, full_name: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="John Doe"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Password</label>
+                        <input
+                            type="password"
+                            value={createForm.password}
+                            onChange={(e) => {
+                                setCreateForm({ ...createForm, password: e.target.value });
+                                setCreateError(null);
+                            }}
+                            className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 ${
+                                createError ? 'border-red-300 dark:border-red-700 focus:ring-red-500' : 'border-gray-300 dark:border-gray-700 focus:ring-orange-500'
+                            }`}
+                            placeholder="••••••••"
+                        />
+                        <PasswordStrength password={createForm.password} />
                     </div>
                 </div>
-            )
-            }
+            </Modal>
 
             {/* Edit User Modal */}
-            {
-                isEditModalOpen && selectedUser && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-xl w-full max-w-md border border-gray-200 dark:border-gray-800 animate-in fade-in zoom-in-95 duration-200">
-                            <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-800">
-                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Edit User</h3>
-                                <button onClick={() => setIsEditModalOpen(false)} className="text-gray-400 hover:text-gray-500">
-                                    <X className="w-5 h-5" />
-                                </button>
-                            </div>
-
-                            <div className="p-6 space-y-4">
-                                {message && (
-                                    <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                        {message.text}
-                                    </div>
-                                )}
-
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name</label>
-                                    <input
-                                        type="text"
-                                        value={editForm.full_name}
-                                        onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
-                                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                                        placeholder="Enter full name"
-                                    />
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
-                                    <input
-                                        type="email"
-                                        value={editForm.email}
-                                        onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                                        placeholder="Enter email address"
-                                    />
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
-                                    <div className="flex items-center gap-3">
-                                        <button
-                                            onClick={() => setEditForm({ ...editForm, is_active: !editForm.is_active })}
-                                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 ${editForm.is_active ? 'bg-orange-600' : 'bg-gray-200 dark:bg-gray-700'
-                                                }`}
-                                        >
-                                            <span
-                                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editForm.is_active ? 'translate-x-6' : 'translate-x-1'
-                                                    }`}
-                                            />
-                                        </button>
-                                        <span className="text-sm text-gray-600 dark:text-gray-400">
-                                            {editForm.is_active ? 'Active Account' : 'Inactive Account'}
-                                        </span>
-                                    </div>
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                        Reset Password <span className="text-gray-400 font-normal">(Optional)</span>
-                                    </label>
-                                    <div className="relative">
-                                        <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                                        <input
-                                            type="password"
-                                            value={editForm.password}
-                                            onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                                            placeholder="Enter new password to reset"
-                                            className="w-full pl-9 pr-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                                        />
-                                    </div>
-                                    {editForm.password && <PasswordStrength password={editForm.password} />}
-                                </div>
-                            </div>
-
-                            <div className="flex justify-end gap-3 p-6 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 rounded-b-xl">
-                                <button
-                                    onClick={() => setIsEditModalOpen(false)}
-                                    className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    onClick={handleSaveUser}
-                                    className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 rounded-lg shadow-sm shadow-orange-500/20 flex items-center gap-2"
-                                >
+            <Modal
+                isOpen={editModal.isOpen}
+                onClose={editModal.close}
+                title="Edit User"
+                footer={
+                    <>
+                        <button
+                            onClick={editModal.close}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={handleSaveUser}
+                            disabled={isSaving}
+                            className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm shadow-orange-500/20 flex items-center gap-2"
+                        >
+                            {isSaving ? (
+                                <>
+                                    <Loader className="w-4 h-4 animate-spin" /> Saving...
+                                </>
+                            ) : (
+                                <>
                                     <Save className="w-4 h-4" /> Save Changes
-                                </button>
-                            </div>
-                        </div>
+                                </>
+                            )}
+                        </button>
+                    </>
+                }
+            >
+                {message && (
+                    <div className={`p-3 rounded-lg text-sm mb-4 ${message.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                        {message.text}
                     </div>
-                )
-            }
-            {/* Delete Confirmation Modal */}
-            {
-                isDeleteModalOpen && userToDelete && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-xl w-full max-w-md border border-gray-200 dark:border-gray-800 animate-in fade-in zoom-in-95 duration-200">
-                            <div className="p-6 text-center">
-                                <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center mx-auto mb-4 text-red-600 dark:text-red-400">
-                                    <Trash2 className="w-6 h-6" />
-                                </div>
-                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete User</h3>
-                                <p className="text-gray-500 dark:text-gray-400 mb-6">
-                                    Are you sure you want to delete <strong>{userToDelete.full_name || userToDelete.email}</strong>? This action cannot be undone.
-                                </p>
+                )}
 
-                                <div className="flex justify-center gap-3">
-                                    <button
-                                        onClick={() => setIsDeleteModalOpen(false)}
-                                        className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={confirmDeleteUser}
-                                        className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-sm shadow-red-500/20 flex items-center gap-2"
-                                    >
-                                        <Trash2 className="w-4 h-4" /> Delete User
-                                    </button>
-                                </div>
-                            </div>
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name</label>
+                        <input
+                            type="text"
+                            value={editForm.full_name}
+                            onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="Enter full name"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                        <input
+                            type="email"
+                            value={editForm.email}
+                            onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="Enter email address"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => setEditForm({ ...editForm, is_active: !editForm.is_active })}
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 ${editForm.is_active ? 'bg-orange-600' : 'bg-gray-200 dark:bg-gray-700'
+                                    }`}
+                            >
+                                <span
+                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editForm.is_active ? 'translate-x-6' : 'translate-x-1'
+                                        }`}
+                                />
+                            </button>
+                            <span className="text-sm text-gray-600 dark:text-gray-400">
+                                {editForm.is_active ? 'Active Account' : 'Inactive Account'}
+                            </span>
                         </div>
                     </div>
-                )
-            }
-        </div >
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Reset Password <span className="text-gray-400 font-normal">(Optional)</span>
+                        </label>
+                        <div className="relative">
+                            <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                            <input
+                                type="password"
+                                value={editForm.password}
+                                onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                                placeholder="Enter new password to reset"
+                                className="w-full pl-9 pr-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            />
+                        </div>
+                        {editForm.password && <PasswordStrength password={editForm.password} />}
+                    </div>
+                </div>
+            </Modal>
+
+            {/* Delete Confirmation Modal */}
+            <ConfirmDialog
+                isOpen={deleteModal.isOpen}
+                onClose={deleteModal.close}
+                onConfirm={confirmDeleteUser}
+                title="Delete User"
+                message={
+                    deleteModal.data ? (
+                        <>
+                            Are you sure you want to delete <strong>{deleteModal.data.full_name || deleteModal.data.email}</strong>? This action cannot be undone.
+                        </>
+                    ) : (
+                        'Are you sure you want to delete this user? This action cannot be undone.'
+                    )
+                }
+                confirmText="Delete User"
+                variant="danger"
+                isLoading={isDeleting}
+            />
+        </div>
     );
 };
