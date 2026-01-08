@@ -15,9 +15,9 @@ from app.database import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 # Get admin credentials from environment
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@foundry-idp.com")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin123!@#")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "<your-email>")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "<your-username>")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "<your-password>")
 
 
 async def init_database():

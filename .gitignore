@@ -61,4 +61,4 @@ frontend/build/
 *.dockerignore
 
 # Docker Compose
-docker-compose.yml
+*.docker-compose.yml
