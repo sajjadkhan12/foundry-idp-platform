@@ -38,11 +38,11 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'sm', s
             dot: 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]'
         },
         failed: {
-            bg: 'bg-gray-100/80 dark:bg-gray-800/80',
-            text: 'text-gray-700 dark:text-gray-300',
-            border: 'border-gray-200/50 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600',
-            icon: size === 'sm' ? <XCircle className="w-3.5 h-3.5" /> : <XCircle className="w-4 h-4" />,
-            dot: 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]'
+            bg: 'bg-yellow-500/10 dark:bg-yellow-500/20',
+            text: 'text-yellow-700 dark:text-yellow-300',
+            border: 'border-yellow-500/30 dark:border-yellow-500/30 hover:border-yellow-500/50 dark:hover:border-yellow-500/40',
+            icon: size === 'sm' ? <AlertCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-4 h-4" />,
+            dot: 'bg-yellow-500 shadow-[0_0_6px_rgba(234,179,8,0.5)]'
         },
         stopped: {
             bg: 'bg-gray-100/80 dark:bg-gray-800/80',
@@ -50,6 +50,13 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'sm', s
             border: 'border-gray-200/50 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600',
             icon: size === 'sm' ? <AlertCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-4 h-4" />,
             dot: 'bg-gray-500 shadow-[0_0_6px_rgba(107,114,128,0.5)]'
+        },
+        updating: {
+            bg: 'bg-blue-500/10 dark:bg-blue-500/20',
+            text: 'text-blue-700 dark:text-blue-300',
+            border: 'border-blue-500/30 dark:border-blue-500/30 hover:border-blue-500/50 dark:hover:border-blue-500/40',
+            icon: size === 'sm' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Loader2 className="w-4 h-4 animate-spin" />,
+            dot: 'bg-blue-500 animate-pulse shadow-[0_0_6px_rgba(59,130,246,0.5)]'
         }
     };
 
@@ -59,9 +66,9 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'sm', s
 
     return (
         <div className="flex items-center gap-2">
-            {showDot && <span className={`w-2 h-2 rounded-full animate-pulse ${variant.dot}`}></span>}
-            <span className={`inline-flex items-center gap-1.5 ${padding} rounded-full ${textSize} font-semibold border transition-all duration-200 shadow-sm hover:shadow hover:bg-gray-100 dark:hover:bg-gray-800 ${variant.bg} ${variant.text} ${variant.border}`}>
-                <span className="flex items-center justify-center opacity-70">
+            {showDot && <span className={`w-2.5 h-2.5 rounded-full ${variant.dot} ring-4 ring-white/5`}></span>}
+            <span className={`inline-flex items-center gap-2 ${padding} rounded-xl ${textSize} font-bold border transition-all duration-300 shadow-sm hover:translate-y-[-1px] hover:shadow-lg ${variant.bg} ${variant.text} ${variant.border} backdrop-blur-md uppercase tracking-wider`}>
+                <span className="flex items-center justify-center">
                     {variant.icon}
                 </span>
                 {status.charAt(0).toUpperCase() + status.slice(1)}
@@ -77,10 +84,8 @@ interface PluginBadgeProps {
 
 export const PluginBadge: React.FC<PluginBadgeProps> = ({ pluginId, provider }) => {
     return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100/80 dark:bg-gray-800/80 text-gray-700 dark:text-gray-300 border border-gray-200/50 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all duration-200 shadow-sm hover:shadow">
-            <span className="flex items-center justify-center opacity-70">
-                <Package className="w-3 h-3" />
-            </span>
+        <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-gray-50/50 dark:bg-white/5 text-gray-600 dark:text-gray-400 border border-gray-200/50 dark:border-white/10 hover:border-orange-500/30 hover:text-orange-600 dark:hover:text-orange-400 transition-all duration-300 shadow-sm backdrop-blur-sm">
+            <Package className="w-3.5 h-3.5 opacity-50" />
             {pluginId}
         </span>
     );

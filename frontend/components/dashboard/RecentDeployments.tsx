@@ -117,7 +117,7 @@ export const RecentDeployments: React.FC<RecentDeploymentsProps> = ({
                                         <AlertCircle className="w-4 h-4 text-yellow-500" title={deployment.last_update_error || 'Update failed'} />
                                     )}
                                     {deployment.update_status === 'updating' && (
-                                        <Loader className="w-4 h-4 text-blue-500 animate-spin" />
+                                        <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
                                     )}
                                 </div>
                             </div>

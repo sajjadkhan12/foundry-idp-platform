@@ -9,7 +9,7 @@ import {
     Cpu,
     AlertCircle,
     CheckCircle2,
-    Loader,
+    Loader2,
     Info,
     Lock,
     Clock,
@@ -62,14 +62,14 @@ const Provision: React.FC = () => {
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [showBusinessUnitWarning, setShowBusinessUnitWarning] = useState(false);
-    
+
     // Environment and Tags state (NEW)
     const [environment, setEnvironment] = useState<string>('development');
     const [tags, setTags] = useState<Record<string, string>>({});
     const [deploymentName, setDeploymentName] = useState<string>('');
     const [costCenter, setCostCenter] = useState<string>('');
     const [projectCode, setProjectCode] = useState<string>('');
-    
+
     // Dynamic cost estimation
     const [dynamicCostEstimate, setDynamicCostEstimate] = useState<{
         estimated_monthly_cost?: number;
@@ -78,7 +78,7 @@ const Provision: React.FC = () => {
         note?: string;
     } | null>(null);
     const [loadingCostEstimate, setLoadingCostEstimate] = useState(false);
-    
+
     // Use isAdmin from context (permission-based, no hardcoded role checks)
     const userIsAdmin = isAdmin;
 
@@ -140,10 +140,11 @@ const Provision: React.FC = () => {
             addNotification('error', 'Please provide a reason for requesting access');
             return;
         }
-        
+
         try {
             setRequestingAccess(true);
-            await api.requestAccess(pluginId!, requestNote.trim());
+            // Pass active business unit ID if available (BU owners need this)
+            await api.requestAccess(pluginId!, requestNote.trim(), activeBusinessUnit?.id);
             addNotification('success', 'Access request submitted. An administrator or business unit owner will review your request.');
             setShowRequestModal(false);
             setRequestNote('');
@@ -164,7 +165,7 @@ const Provision: React.FC = () => {
 
     const handleDelete = async () => {
         if (!pluginId) return;
-        
+
         setIsDeleting(true);
         try {
             await api.deletePlugin(pluginId);
@@ -181,22 +182,20 @@ const Provision: React.FC = () => {
 
     const initializeInputs = (manifest: any, deploymentType?: string) => {
         const initialInputs: Record<string, any> = {};
-        
-        // For microservices, only need deployment_name
-        const isMicroservice = deploymentType === 'microservice' || pluginInfo?.deployment_type === 'microservice';
+
+        // For microservices, always ensure deployment_name is present
+        const isMicroservice = deploymentType === 'microservice' || pluginInfo?.deployment_type === 'microservice' || manifest?.deployment_type === 'microservice';
         if (isMicroservice) {
             initialInputs['deployment_name'] = '';
-            setInputs(initialInputs);
-            return;
         }
-        
-        // For infrastructure, use manifest inputs
+
+        // Use manifest inputs if they exist (works for both infra and microservices now)
         if (manifest.inputs && manifest.inputs.properties) {
             Object.keys(manifest.inputs.properties).forEach(key => {
                 const prop = manifest.inputs.properties[key];
                 if (prop.default !== undefined) {
                     initialInputs[key] = prop.default;
-                } else {
+                } else if (!initialInputs[key]) {
                     initialInputs[key] = '';
                 }
             });
@@ -216,31 +215,31 @@ const Provision: React.FC = () => {
     useEffect(() => {
         const fetchCostEstimate = async () => {
             if (!pluginId || !selectedVersion) return;
-            
+
             const versionData = versions.find(v => v.version === selectedVersion);
             if (!versionData) return;
-            
+
             const manifest = versionData.manifest;
             const cloudProvider = manifest?.cloud_provider?.toLowerCase();
-            
+
             // Only fetch for GCP and AWS plugins
             if (cloudProvider !== 'gcp' && cloudProvider !== 'aws') {
                 setDynamicCostEstimate(null);
                 return;
             }
-            
+
             // Check if we have required inputs for cost estimation
             const requiredInputs = manifest?.inputs?.required || [];
             const hasRequiredInputs = requiredInputs.every((key: string) => {
                 const value = inputs[key];
                 return value !== undefined && value !== null && value !== '';
             });
-            
+
             if (!hasRequiredInputs) {
                 setDynamicCostEstimate(null);
                 return;
             }
-            
+
             try {
                 setLoadingCostEstimate(true);
                 const estimate = await costApi.getPreProvisionCostEstimate(pluginId, inputs);
@@ -253,7 +252,7 @@ const Provision: React.FC = () => {
                 setLoadingCostEstimate(false);
             }
         };
-        
+
         // Debounce cost estimation calls
         const timeoutId = setTimeout(fetchCostEstimate, 500);
         return () => clearTimeout(timeoutId);
@@ -261,6 +260,10 @@ const Provision: React.FC = () => {
 
     const handleInputChange = (key: string, value: any) => {
         setInputs(prev => ({ ...prev, [key]: value }));
+        // Sync deploymentName state for backward compatibility/other uses if it's the specific key
+        if (key === 'deployment_name') {
+            setDeploymentName(value);
+        }
     };
 
     const handleProvision = async () => {
@@ -285,14 +288,14 @@ const Provision: React.FC = () => {
             // Validate required tags
             const requiredTags = ['team', 'owner', 'purpose'];
             const missingTags = requiredTags.filter(tag => !tags[tag] || !tags[tag].trim());
-            
+
             if (missingTags.length > 0) {
                 addNotification('error', `Missing required tags: ${missingTags.join(', ')}`);
                 setError(`Missing required tags: ${missingTags.join(', ')}`);
                 setProvisioning(false);
                 return;
             }
-            
+
             // For microservices, ensure deployment_name is set
             if (isMicroservice) {
                 if (!inputs['deployment_name'] || inputs['deployment_name'].trim() === '') {
@@ -302,7 +305,7 @@ const Provision: React.FC = () => {
                     return;
                 }
             }
-            
+
             const result = await api.provision({
                 plugin_id: pluginId!,
                 version: selectedVersion,
@@ -315,17 +318,20 @@ const Provision: React.FC = () => {
             });
 
             // Show success notification
-            const resourceName = isMicroservice 
-                ? inputs['deployment_name'] 
-                : (inputs['bucket_name'] || inputs['name'] || `${pluginId}-${result.id.substring(0, 8)}`);
+            const resourceName = isMicroservice
+                ? inputs['deployment_name']
+                : (inputs['bucket_name'] || inputs['name'] || `${pluginId}-${(result.job_id || result.id || '').substring(0, 8)}`);
             addNotification('success', `${isMicroservice ? 'Microservice' : 'Provisioning'} started for ${resourceName}`);
 
             // Wait a moment for user to see the notification before redirecting
             setTimeout(() => {
                 if (result.deployment_id) {
                     navigate(`/deployment/${result.deployment_id}`);
+                } else if (result.job_id || result.id) {
+                    navigate(`/jobs/${result.job_id || result.id}`);
                 } else {
-                    navigate(`/jobs/${result.id}`);
+                    console.error('No job_id or deployment_id in provision response:', result);
+                    addNotification('error', 'Provisioning started but could not redirect to job status');
                 }
             }, 2000); // 2 seconds delay as requested
         } catch (err: any) {
@@ -340,11 +346,11 @@ const Provision: React.FC = () => {
 
     const selectedVersionData = versions.find(v => v.version === selectedVersion);
     const manifest = selectedVersionData?.manifest;
-    
+
     // Check if this is a microservice (must be after manifest is defined)
-    const isMicroservice = pluginInfo?.deployment_type === 'microservice' || 
-                          manifest?.deployment_type === 'microservice' ||
-                          (manifest?.cloud_provider === 'kubernetes' && manifest?.deployment_type === 'microservice');
+    const isMicroservice = pluginInfo?.deployment_type === 'microservice' ||
+        manifest?.deployment_type === 'microservice' ||
+        (manifest?.cloud_provider === 'kubernetes' && manifest?.deployment_type === 'microservice');
 
     // Construct icon URL if available
     const getIconUrl = () => {
@@ -367,7 +373,7 @@ const Provision: React.FC = () => {
     if (loading) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[60vh]">
-                <Loader className="w-10 h-10 text-orange-600 dark:text-orange-400 animate-spin mb-4" />
+                <Loader2 className="w-10 h-10 text-orange-600 dark:text-orange-400 animate-spin mb-4" />
                 <p className="text-gray-600 dark:text-gray-400">Loading provisioning template...</p>
             </div>
         );
@@ -497,7 +503,7 @@ const Provision: React.FC = () => {
                                 Select the target environment and add required tags
                             </p>
                         </div>
-                        
+
                         <div className="p-4 sm:p-6 space-y-6">
                             <EnvironmentSelector
                                 value={environment}
@@ -505,30 +511,37 @@ const Provision: React.FC = () => {
                                 userRoles={user?.roles || []}
                                 disabled={provisioning}
                             />
-                            
+
                             <TagsInput
                                 tags={tags}
                                 onChange={setTags}
                                 requiredTags={['team', 'owner', 'purpose']}
                                 disabled={provisioning}
                             />
-                            
+
                             {/* Optional metadata fields */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                        Deployment Name (Optional)
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={deploymentName}
-                                        onChange={(e) => setDeploymentName(e.target.value)}
-                                        placeholder="e.g., api-gateway-prod"
-                                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                        disabled={provisioning}
-                                    />
-                                </div>
-                                
+                                {!isMicroservice && (
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Deployment Name (Optional)
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={deploymentName}
+                                            onChange={(e) => {
+                                                setDeploymentName(e.target.value);
+                                                if (isMicroservice) {
+                                                    handleInputChange('deployment_name', e.target.value);
+                                                }
+                                            }}
+                                            placeholder="e.g., api-gateway-prod"
+                                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            disabled={provisioning}
+                                        />
+                                    </div>
+                                )}
+
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                         Cost Center (Optional)
@@ -542,7 +555,7 @@ const Provision: React.FC = () => {
                                         disabled={provisioning}
                                     />
                                 </div>
-                                
+
                                 <div className="md:col-span-2">
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                         Project Code (Optional)
@@ -568,7 +581,7 @@ const Provision: React.FC = () => {
                                 Configuration
                             </h2>
                             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                {isMicroservice 
+                                {isMicroservice
                                     ? 'Enter a name for your microservice repository'
                                     : 'Configure your deployment parameters'}
                             </p>
@@ -576,10 +589,10 @@ const Provision: React.FC = () => {
 
 
                         <div className="p-6 space-y-6">
-                            {/* Microservice Form - Simplified */}
-                            {isMicroservice ? (
-                                <div className="space-y-6 pt-4">
-                                    <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-4">
+                            {/* Microservice Form - Always show deployment_name if isMicroservice */}
+                            {isMicroservice && (
+                                <div className="space-y-6 pt-4 mb-6">
+                                    <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-red-800 rounded-xl p-4 mb-4">
                                         <div className="flex items-start gap-3">
                                             <Info className="w-5 h-5 text-purple-600 dark:text-purple-400 mt-0.5 flex-shrink-0" />
                                             <div>
@@ -587,121 +600,118 @@ const Provision: React.FC = () => {
                                                     Microservice Provisioning
                                                 </h4>
                                                 <p className="text-sm text-purple-700 dark:text-purple-300">
-                                                    This will create a new GitHub repository from the template and set up CI/CD. 
-                                                    The repository will be created in your GitHub account.
+                                                    This will create a new GitHub repository from the template and set up CI/CD.
                                                 </p>
                                             </div>
                                         </div>
                                     </div>
-                                    
+
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                             Deployment Name <span className="text-red-500">*</span>
                                         </label>
                                         <input
                                             type="text"
-                                            value={inputs['deployment_name'] || ''}
+                                            value={inputs['deployment_name'] || deploymentName || ''}
                                             onChange={(e) => handleInputChange('deployment_name', e.target.value)}
                                             placeholder="e.g., user-api, payment-service"
                                             className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
                                             required
                                         />
                                         <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                            This name will be used for the GitHub repository. Only alphanumeric characters, hyphens, underscores, and dots are allowed.
+                                            This name will be used for the GitHub repository.
                                         </p>
                                     </div>
                                 </div>
-                            ) : manifest.inputs?.properties ? (
+                            )}
+
+                            {/* Standard Manifest Inputs (Excluding deployment_name as it's handled above) */}
+                            {manifest.inputs?.properties && Object.keys(manifest.inputs.properties).length > 0 && (
                                 <div className="space-y-6 pt-4 border-t border-gray-100 dark:border-gray-800">
-                                    {Object.entries(manifest.inputs.properties).map(([key, prop]: [string, any]) => {
-                                        const isRequired = manifest.inputs.required?.includes(key);
-                                        return (
-                                            <div key={key} className="group">
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1">
-                                                    {prop.title || key}
-                                                    {isRequired && <span className="text-red-500">*</span>}
-                                                    {prop.description && (
-                                                        <div className="group relative ml-1">
-                                                            <Info className="w-4 h-4 text-gray-400 cursor-help" />
-                                                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
-                                                                {prop.description}
-                                                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                    {Object.entries(manifest.inputs.properties)
+                                        .filter(([key]) => key !== 'deployment_name')
+                                        .map(([key, prop]: [string, any]) => {
+                                            const isRequired = manifest.inputs.required?.includes(key);
+                                            return (
+                                                <div key={key} className="group">
+                                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1">
+                                                        {prop.title || key}
+                                                        {isRequired && <span className="text-red-500">*</span>}
+                                                        {prop.description && (
+                                                            <div className="group relative ml-1">
+                                                                <Info className="w-4 h-4 text-gray-400 cursor-help" />
+                                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
+                                                                    {prop.description}
+                                                                    <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    )}
-                                                </label>
-
-                                                {prop.enum ? (
-                                                    <select
-                                                        value={inputs[key] || ''}
-                                                        onChange={(e) => handleInputChange(key, e.target.value)}
-                                                        className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
-                                                    >
-                                                        {prop.enum.map((option: string) => (
-                                                            <option key={option} value={option}>{option}</option>
-                                                        ))}
-                                                    </select>
-                                                ) : prop.type === 'boolean' ? (
-                                                    <label className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:border-orange-500/50 transition-colors">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={inputs[key] || false}
-                                                            onChange={(e) => handleInputChange(key, e.target.checked)}
-                                                            className="w-5 h-5 text-orange-600 rounded focus:ring-orange-500 border-gray-300 dark:border-gray-600"
-                                                        />
-                                                        <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">
-                                                            {prop.description || prop.title || key}
-                                                        </span>
+                                                        )}
                                                     </label>
-                                                ) : prop.type === 'integer' ? (
-                                                    <input
-                                                        type="number"
-                                                        value={inputs[key] || ''}
-                                                        onChange={(e) => handleInputChange(key, parseInt(e.target.value))}
-                                                        className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
-                                                        placeholder={prop.default?.toString()}
-                                                    />
-                                                ) : (
-                                                    <input
-                                                        type="text"
-                                                        value={inputs[key] || ''}
-                                                        onChange={(e) => handleInputChange(key, e.target.value)}
-                                                        placeholder={prop.default}
-                                                        className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
-                                                    />
-                                                )}
 
-                                                {prop.description && prop.type !== 'boolean' && (
-                                                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                                        {prop.description}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
+                                                    {prop.enum ? (
+                                                        <select
+                                                            value={inputs[key] || ''}
+                                                            onChange={(e) => handleInputChange(key, e.target.value)}
+                                                            className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
+                                                        >
+                                                            {prop.enum.map((option: string) => (
+                                                                <option key={option} value={option}>{option}</option>
+                                                            ))}
+                                                        </select>
+                                                    ) : prop.type === 'boolean' ? (
+                                                        <label className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:border-orange-500/50 transition-colors">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={inputs[key] || false}
+                                                                onChange={(e) => handleInputChange(key, e.target.checked)}
+                                                                className="w-5 h-5 text-orange-600 rounded focus:ring-orange-500 border-gray-300 dark:border-gray-600"
+                                                            />
+                                                            <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">
+                                                                {prop.description || prop.title || key}
+                                                            </span>
+                                                        </label>
+                                                    ) : prop.type === 'integer' ? (
+                                                        <input
+                                                            type="number"
+                                                            value={inputs[key] || ''}
+                                                            onChange={(e) => handleInputChange(key, parseInt(e.target.value))}
+                                                            className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
+                                                            placeholder={prop.default?.toString()}
+                                                        />
+                                                    ) : (
+                                                        <input
+                                                            type="text"
+                                                            value={inputs[key] || ''}
+                                                            onChange={(e) => handleInputChange(key, e.target.value)}
+                                                            placeholder={prop.default}
+                                                            className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
+                                                        />
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
                                 </div>
-                            ) : null}
+                            )}
                         </div>
 
                         <div className="p-6 bg-gray-50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-800">
                             <button
                                 onClick={handleProvision}
                                 disabled={provisioning || (pluginInfo?.is_locked && !pluginInfo?.has_access)}
-                                className={`w-full py-3 px-4 rounded-xl font-semibold text-white shadow-lg shadow-orange-500/20 transition-all transform active:scale-[0.98] ${
-                                    provisioning || (pluginInfo?.is_locked && !pluginInfo?.has_access)
-                                        ? 'bg-gray-400 cursor-not-allowed'
-                                        : 'bg-orange-600 hover:bg-orange-700 hover:shadow-orange-500/30'
-                                }`}
+                                className={`w-full py-3 px-4 rounded-xl font-semibold text-white shadow-lg shadow-orange-500/20 transition-all transform active:scale-[0.98] ${provisioning || (pluginInfo?.is_locked && !pluginInfo?.has_access)
+                                    ? 'bg-gray-400 cursor-not-allowed'
+                                    : 'bg-orange-600 hover:bg-orange-700 hover:shadow-orange-500/30'
+                                    }`}
                             >
                                 {provisioning ? (
                                     <div className="flex items-center justify-center gap-2">
-                                        <Loader className="w-5 h-5 animate-spin" />
+                                        <Loader2 className="w-5 h-5 animate-spin" />
                                         {isMicroservice ? 'Creating Microservice...' : 'Provisioning Infrastructure...'}
                                     </div>
                                 ) : pluginInfo?.is_locked && !pluginInfo?.has_access ? (
                                     <div className="flex items-center justify-center gap-2">
                                         <Lock className="w-5 h-5" />
-                                        Plugin Is Locked 
+                                        Plugin Is Locked
                                     </div>
                                 ) : (
                                     isMicroservice ? 'Create Microservice' : 'Deploy Infrastructure'
@@ -715,36 +725,32 @@ const Provision: React.FC = () => {
                 <div className="space-y-6">
                     {/* Request Access - Top of Sidebar (for normal users) */}
                     {pluginInfo?.is_locked && !pluginInfo?.has_access && !isAdmin && (
-                        <div className={`border rounded-xl p-5 shadow-sm ${
-                            pluginInfo?.has_pending_request 
-                                ? "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800"
-                                : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
-                        }`}>
+                        <div className={`border rounded-xl p-5 shadow-sm ${pluginInfo?.has_pending_request
+                            ? "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800"
+                            : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
+                            }`}>
                             <div className="flex items-start gap-3 mb-4">
-                                <div className={`p-2 rounded-lg ${
-                                    pluginInfo?.has_pending_request
-                                        ? "bg-yellow-100 dark:bg-yellow-900/30"
-                                        : "bg-red-100 dark:bg-red-900/30"
-                                }`}>
+                                <div className={`p-2 rounded-lg ${pluginInfo?.has_pending_request
+                                    ? "bg-yellow-100 dark:bg-yellow-900/30"
+                                    : "bg-red-100 dark:bg-red-900/30"
+                                    }`}>
                                     {pluginInfo?.has_pending_request ? (
-                                        <Loader className="w-5 h-5 text-yellow-600 dark:text-yellow-400 animate-spin" />
+                                        <Loader2 className="w-5 h-5 text-yellow-600 dark:text-yellow-400 animate-spin" />
                                     ) : (
                                         <Lock className="w-5 h-5 text-red-600 dark:text-red-400" />
                                     )}
                                 </div>
                                 <div className="flex-1">
-                                    <h3 className={`text-sm font-semibold mb-1 ${
-                                        pluginInfo?.has_pending_request
-                                            ? "text-yellow-800 dark:text-yellow-300"
-                                            : "text-red-800 dark:text-red-300"
-                                    }`}>
+                                    <h3 className={`text-sm font-semibold mb-1 ${pluginInfo?.has_pending_request
+                                        ? "text-yellow-800 dark:text-yellow-300"
+                                        : "text-red-800 dark:text-red-300"
+                                        }`}>
                                         {pluginInfo?.has_pending_request ? "Request Pending" : "Plugin is Locked"}
                                     </h3>
-                                    <p className={`text-xs ${
-                                        pluginInfo?.has_pending_request
-                                            ? "text-yellow-700 dark:text-yellow-400"
-                                            : "text-red-700 dark:text-red-400"
-                                    }`}>
+                                    <p className={`text-xs ${pluginInfo?.has_pending_request
+                                        ? "text-yellow-700 dark:text-yellow-400"
+                                        : "text-red-700 dark:text-red-400"
+                                        }`}>
                                         {pluginInfo?.has_pending_request
                                             ? "Your access request is pending administrator review."
                                             : "This plugin requires administrator approval to deploy."}
@@ -754,15 +760,14 @@ const Provision: React.FC = () => {
                             <button
                                 onClick={handleRequestAccessClick}
                                 disabled={requestingAccess || pluginInfo?.has_pending_request}
-                                className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm ${
-                                    pluginInfo?.has_pending_request
-                                        ? "bg-yellow-600 hover:bg-yellow-700 text-white"
-                                        : "bg-red-600 hover:bg-red-700 text-white"
-                                }`}
+                                className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm ${pluginInfo?.has_pending_request
+                                    ? "bg-yellow-600 hover:bg-yellow-700 text-white"
+                                    : "bg-red-600 hover:bg-red-700 text-white"
+                                    }`}
                             >
                                 {requestingAccess ? (
                                     <>
-                                        <Loader className="w-4 h-4 animate-spin" />
+                                        <Loader2 className="w-4 h-4 animate-spin" />
                                         Requesting...
                                     </>
                                 ) : pluginInfo?.has_pending_request ? (
@@ -791,9 +796,9 @@ const Provision: React.FC = () => {
                                 {pluginInfo.git_repo_url && (
                                     <div className="flex items-start gap-2">
                                         <span className="font-medium text-gray-700 dark:text-gray-300 min-w-[60px]">Repo:</span>
-                                        <a 
-                                            href={pluginInfo.git_repo_url} 
-                                            target="_blank" 
+                                        <a
+                                            href={pluginInfo.git_repo_url}
+                                            target="_blank"
                                             rel="noopener noreferrer"
                                             className="text-blue-600 dark:text-blue-400 hover:underline truncate flex-1"
                                         >
@@ -866,71 +871,71 @@ const Provision: React.FC = () => {
                             <Cpu className="w-5 h-5" />
                             Estimated Cost
                             {loadingCostEstimate && (
-                                <Loader className="w-4 h-4 animate-spin ml-2" />
+                                <Loader2 className="w-4 h-4 animate-spin ml-2" />
                             )}
                         </h3>
                         {dynamicCostEstimate && (manifest.cloud_provider?.toLowerCase() === 'gcp' || manifest.cloud_provider?.toLowerCase() === 'aws') ? (
-                                <>
-                                    <p className="text-orange-100 text-sm mb-4">
-                                        Based on your current configuration
-                                    </p>
-                                    <div className="text-3xl font-bold mb-1">
-                                        ~${dynamicCostEstimate.estimated_monthly_cost?.toFixed(2) || '0.00'}
-                                        <span className="text-sm font-normal text-orange-200">
-                                            {dynamicCostEstimate.currency ? ` ${dynamicCostEstimate.currency}` : ' USD'} / month
-                                        </span>
-                                    </div>
-                                    {dynamicCostEstimate.breakdown && Object.keys(dynamicCostEstimate.breakdown).length > 0 && (
-                                        <div className="mt-3 pt-3 border-t border-orange-400/30">
-                                            <p className="text-xs text-orange-200 mb-1">Breakdown:</p>
-                                            <div className="space-y-1">
-                                                {Object.entries(dynamicCostEstimate.breakdown).map(([key, value]) => (
-                                                    <div key={key} className="flex justify-between text-xs">
-                                                        <span className="text-orange-200 capitalize">{key.replace(/_/g, ' ')}:</span>
-                                                        <span className="font-semibold">${(value as number).toFixed(2)}</span>
-                                                    </div>
-                                                ))}
-                                            </div>
+                            <>
+                                <p className="text-orange-100 text-sm mb-4">
+                                    Based on your current configuration
+                                </p>
+                                <div className="text-3xl font-bold mb-1">
+                                    ~${dynamicCostEstimate.estimated_monthly_cost?.toFixed(2) || '0.00'}
+                                    <span className="text-sm font-normal text-orange-200">
+                                        {dynamicCostEstimate.currency ? ` ${dynamicCostEstimate.currency}` : ' USD'} / month
+                                    </span>
+                                </div>
+                                {dynamicCostEstimate.breakdown && Object.keys(dynamicCostEstimate.breakdown).length > 0 && (
+                                    <div className="mt-3 pt-3 border-t border-orange-400/30">
+                                        <p className="text-xs text-orange-200 mb-1">Breakdown:</p>
+                                        <div className="space-y-1">
+                                            {Object.entries(dynamicCostEstimate.breakdown).map(([key, value]) => (
+                                                <div key={key} className="flex justify-between text-xs">
+                                                    <span className="text-orange-200 capitalize">{key.replace(/_/g, ' ')}:</span>
+                                                    <span className="font-semibold">${(value as number).toFixed(2)}</span>
+                                                </div>
+                                            ))}
                                         </div>
-                                    )}
-                                    {dynamicCostEstimate.note && (
-                                        <p className="text-xs text-orange-200 mt-2">
-                                            *{dynamicCostEstimate.note}
-                                        </p>
-                                    )}
-                                </>
-                            ) : manifest.cost_estimate ? (
-                                <>
-                                    <p className="text-orange-100 text-sm mb-4">
-                                        {manifest.cost_estimate.description || "Based on standard configuration and regional pricing."}
-                                    </p>
-                                    <div className="text-3xl font-bold mb-1">
-                                        ~${typeof manifest.cost_estimate.amount === 'number' ? manifest.cost_estimate.amount.toFixed(2) : manifest.cost_estimate.amount}
-                                        <span className="text-sm font-normal text-orange-200">
-                                            {manifest.cost_estimate.currency ? ` ${manifest.cost_estimate.currency}` : ''} / {manifest.cost_estimate.period || 'month'}
-                                        </span>
                                     </div>
-                                    <p className="text-xs text-orange-200">
-                                        *{manifest.cost_estimate.disclaimer || "Actual costs may vary based on usage"}
+                                )}
+                                {dynamicCostEstimate.note && (
+                                    <p className="text-xs text-orange-200 mt-2">
+                                        *{dynamicCostEstimate.note}
                                     </p>
-                                </>
-                            ) : (
-                                <>
-                                    <p className="text-orange-100 text-sm mb-4">
-                                        Fill in the configuration fields to see cost estimate
-                                    </p>
-                                    <div className="text-3xl font-bold mb-1 text-orange-200/70">
-                                        $0.00
-                                        <span className="text-sm font-normal text-orange-200/70">
-                                            / month
-                                        </span>
-                                    </div>
-                                    <p className="text-xs text-orange-200/80">
-                                        {(manifest.cloud_provider?.toLowerCase() === 'gcp' || manifest.cloud_provider?.toLowerCase() === 'aws')
-                                            ? "Cost will be calculated based on your configuration"
-                                            : "Select a GCP or AWS plugin to see cost estimates"}
-                                    </p>
-                                </>
+                                )}
+                            </>
+                        ) : manifest.cost_estimate ? (
+                            <>
+                                <p className="text-orange-100 text-sm mb-4">
+                                    {manifest.cost_estimate.description || "Based on standard configuration and regional pricing."}
+                                </p>
+                                <div className="text-3xl font-bold mb-1">
+                                    ~${typeof manifest.cost_estimate.amount === 'number' ? manifest.cost_estimate.amount.toFixed(2) : manifest.cost_estimate.amount}
+                                    <span className="text-sm font-normal text-orange-200">
+                                        {manifest.cost_estimate.currency ? ` ${manifest.cost_estimate.currency}` : ''} / {manifest.cost_estimate.period || 'month'}
+                                    </span>
+                                </div>
+                                <p className="text-xs text-orange-200">
+                                    *{manifest.cost_estimate.disclaimer || "Actual costs may vary based on usage"}
+                                </p>
+                            </>
+                        ) : (
+                            <>
+                                <p className="text-orange-100 text-sm mb-4">
+                                    Fill in the configuration fields to see cost estimate
+                                </p>
+                                <div className="text-3xl font-bold mb-1 text-orange-200/70">
+                                    $0.00
+                                    <span className="text-sm font-normal text-orange-200/70">
+                                        / month
+                                    </span>
+                                </div>
+                                <p className="text-xs text-orange-200/80">
+                                    {(manifest.cloud_provider?.toLowerCase() === 'gcp' || manifest.cloud_provider?.toLowerCase() === 'aws')
+                                        ? "Cost will be calculated based on your configuration"
+                                        : "Select a GCP or AWS plugin to see cost estimates"}
+                                </p>
+                            </>
                         )}
                     </div>
                 </div>
@@ -973,7 +978,7 @@ const Provision: React.FC = () => {
                             >
                                 {isDeleting ? (
                                     <>
-                                        <Loader className="w-4 h-4 animate-spin" />
+                                        <Loader2 className="w-4 h-4 animate-spin" />
                                         Deleting...
                                     </>
                                 ) : (

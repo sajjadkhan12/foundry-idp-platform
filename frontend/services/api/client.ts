@@ -13,6 +13,11 @@ class ApiClient {
 
     constructor() {
         this.baseURL = API_URL;
+        // Debug: Log the API URL being used
+        console.log('[API Client] Initialized with baseURL:', this.baseURL);
+        if (this.baseURL.includes('auth-service')) {
+            console.error('[API Client] ERROR: API_URL contains auth-service! This should be localhost:8000');
+        }
     }
 
     getAuthHeaders(): HeadersInit {
@@ -40,6 +45,12 @@ class ApiClient {
 
     async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
         const url = `${this.baseURL}${endpoint}`;
+        
+        // Debug: Log the URL being used (remove in production)
+        if (url.includes('auth-service')) {
+            console.error('[API Client] ERROR: Using incorrect URL:', url, 'baseURL:', this.baseURL);
+            throw new Error(`Invalid API URL detected: ${url}. Expected localhost:8000, got auth-service:8000. Please clear browser cache completely.`);
+        }
         
         // Check if token needs refresh before making request
         // Skip for auth endpoints to avoid infinite loops

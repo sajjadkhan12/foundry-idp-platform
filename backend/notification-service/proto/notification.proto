@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package notification;
+
+// Notification Service
+service NotificationService {
+  rpc CreateNotification(CreateNotificationRequest) returns (NotificationResponse);
+  rpc GetNotification(GetNotificationRequest) returns (NotificationResponse);
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc UpdateNotification(UpdateNotificationRequest) returns (NotificationResponse);
+  rpc DeleteNotification(DeleteNotificationRequest) returns (Empty);
+  rpc MarkAsRead(MarkAsReadRequest) returns (NotificationResponse);
+  rpc MarkAllAsRead(MarkAllAsReadRequest) returns (Empty);
+  rpc GetUnreadCount(GetUnreadCountRequest) returns (UnreadCountResponse);
+}
+
+// Common Messages
+message Empty {}
+
+// Notification Messages
+message CreateNotificationRequest {
+  string user_id = 1;
+  string title = 2;
+  string message = 3;
+  string type = 4; // info, success, warning, error
+  string link = 5;
+}
+
+message GetNotificationRequest {
+  string notification_id = 1;
+}
+
+message ListNotificationsRequest {
+  string user_id = 1;
+  int32 skip = 2;
+  int32 limit = 3;
+  bool unread_only = 4;
+}
+
+message UpdateNotificationRequest {
+  string notification_id = 1;
+  bool is_read = 2;
+}
+
+message DeleteNotificationRequest {
+  string notification_id = 1;
+}
+
+message MarkAsReadRequest {
+  string notification_id = 1;
+}
+
+message MarkAllAsReadRequest {
+  string user_id = 1;
+}
+
+message GetUnreadCountRequest {
+  string user_id = 1;
+}
+
+message NotificationResponse {
+  string id = 1;
+  string user_id = 2;
+  string title = 3;
+  string message = 4;
+  string type = 5;
+  bool is_read = 6;
+  string link = 7;
+  string created_at = 8;
+}
+
+message ListNotificationsResponse {
+  repeated NotificationResponse notifications = 1;
+  int32 total = 2;
+  int32 skip = 3;
+  int32 limit = 4;
+}
+
+message UnreadCountResponse {
+  int32 count = 1;
+}

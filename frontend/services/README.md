@@ -57,36 +57,41 @@ const groups = await api.listGroups();
 - `apiClient.getAuthHeaders()` - JWT headers
 
 ### `auth.ts` - Authentication
-- `authApi.login(email, password)`
-- `authApi.register(email, password, full_name)`
-- `authApi.logout()`
+All authentication operations are handled by the **auth-service** microservice via the monolith's REST API:
+- `authApi.login(identifier, password)` - Login via auth-service (gRPC)
+- `authApi.logout()` - Logout via auth-service (gRPC)
+
+**Note:** Token refresh is handled automatically by `apiClient.refreshToken()` when needed.
 
 ### `users.ts` - User Management
-- `usersApi.getCurrentUser()`
-- `usersApi.updateCurrentUser(data)`
-- `usersApi.listUsers(params?)`
-- `usersApi.createUser(data)`
-- `usersApi.adminUpdateUser(userId, data)`
-- `usersApi.deleteUser(userId)`
-- `usersApi.changePassword(data)`
-- `usersApi.uploadAvatar(file)`
+All user management operations are handled by the **auth-service** microservice via the monolith's REST API:
+- `usersApi.getCurrentUser()` - Get current user via auth-service (gRPC)
+- `usersApi.updateCurrentUser(data)` - Update current user via auth-service (gRPC)
+- `usersApi.listUsers(params?)` - List users via auth-service (gRPC)
+- `usersApi.createUser(data)` - Create user via auth-service (gRPC)
+- `usersApi.adminUpdateUser(userId, data)` - Update user via auth-service (gRPC)
+- `usersApi.deleteUser(userId)` - Delete user via auth-service (gRPC)
+- `usersApi.changePassword(data)` - Change password via auth-service (gRPC)
+- `usersApi.uploadAvatar(file)` - Upload avatar (handled by monolith)
 
 ### `groups.ts` - Group Management
-- `groupsApi.listGroups()`
-- `groupsApi.createGroup(data)`
-- `groupsApi.updateGroup(groupId, data)`
-- `groupsApi.deleteGroup(groupId)`
-- `groupsApi.addUserToGroup(groupId, userId)`
-- `groupsApi.removeUserFromGroup(groupId, userId)`
-- `groupsApi.addRoleToGroup(groupId, roleId)`
-- `groupsApi.removeRoleFromGroup(groupId, roleId)`
+All group management operations are handled by the **auth-service** microservice via the monolith's REST API:
+- `groupsApi.listGroups()` - List groups via auth-service (gRPC)
+- `groupsApi.createGroup(data)` - Create group via auth-service (gRPC)
+- `groupsApi.updateGroup(groupId, data)` - Update group via auth-service (gRPC)
+- `groupsApi.deleteGroup(groupId)` - Delete group via auth-service (gRPC)
+- `groupsApi.addUserToGroup(groupId, userId)` - Add user to group via auth-service (gRPC)
+- `groupsApi.removeUserFromGroup(groupId, userId)` - Remove user from group via auth-service (gRPC)
+- `groupsApi.addRoleToGroup(groupId, roleId)` - Add role to group (Casbin, handled by monolith)
+- `groupsApi.removeRoleFromGroup(groupId, roleId)` - Remove role from group (Casbin, handled by monolith)
 
 ### `roles.ts` - Role Management
-- `rolesApi.listRoles()`
-- `rolesApi.createRole(data)`
-- `rolesApi.updateRole(roleId, data)`
-- `rolesApi.deleteRole(roleId)`
-- `rolesApi.getAdminStats()`
+All role management operations are handled by the **auth-service** microservice via the monolith's REST API:
+- `rolesApi.listRoles()` - List roles via auth-service (gRPC)
+- `rolesApi.createRole(data)` - Create role via auth-service (gRPC)
+- `rolesApi.updateRole(roleId, data)` - Update role via auth-service (gRPC)
+- `rolesApi.deleteRole(roleId)` - Delete role via auth-service (gRPC)
+- `rolesApi.getAdminStats()` - Get admin stats (handled by monolith)
 
 ### `deployments.ts` - Deployments
 - `deploymentsApi.listDeployments()`
@@ -182,12 +187,28 @@ Return data or throw error
 
 ## 🔐 Authentication Flow
 
-1. User logs in → `authApi.login()`
+The frontend communicates with the monolith's REST API, which delegates all authentication operations to the **auth-service** microservice via gRPC.
+
+1. User logs in → `authApi.login()` → `/api/v1/auth/login` → **auth-service** (gRPC)
 2. Access token stored in localStorage
-3. All requests include token via `apiClient.getAuthHeaders()`
-4. If 401 error → `apiClient.refreshToken()` auto-called
-5. Original request retried with new token
-6. If refresh fails → redirect to login
+3. Refresh token stored in HTTP-only cookie (handled by backend)
+4. All requests include token via `apiClient.getAuthHeaders()`
+5. If 401 error → `apiClient.refreshToken()` auto-called → `/api/v1/auth/refresh` → **auth-service** (gRPC)
+6. Original request retried with new token
+7. If refresh fails → redirect to login
+
+**Architecture:**
+```
+Frontend (React)
+    ↓ REST API
+Monolith (FastAPI) 
+    ↓ gRPC
+Auth-Service (Microservice)
+    ↓
+PostgreSQL Database
+```
+
+The frontend doesn't need to know about gRPC - it just uses standard REST endpoints that are now backed by the auth-service.
 
 ## 📝 Adding New API Endpoints
 

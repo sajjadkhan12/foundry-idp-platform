@@ -1,0 +1,16 @@
+grpcio==1.60.0
+grpcio-tools==1.60.0
+protobuf==4.25.1
+sqlalchemy==2.0.23
+asyncpg==0.29.0
+casbin==1.19.0
+casbin-sqlalchemy-adapter==0.4.2
+python-jose[cryptography]==3.3.0
+bcrypt==4.1.2
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+psycopg2-binary==2.9.9
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart

@@ -35,102 +35,283 @@ services:
     networks:
       - foundry-idp-network
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: foundry-idp-backend
-    ports:
-      - "8000:8000"
+  # Separate Audit Database
+  postgres-audit:
+    image: postgres:15-alpine
+    container_name: foundry-idp-postgres-audit
     environment:
-      # Database
+      POSTGRES_USER: audit_user
+      POSTGRES_PASSWORD: audit_password
+      POSTGRES_DB: audit_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_audit_data:/var/lib/postgresql/data
+      - ./backend/audit-service/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit_user -d audit_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - foundry-idp-network
+
+  # Backend monolith removed - all functionality migrated to microservices
+  # backend:
+  #   ... (removed - all endpoints migrated to microservices)
+
+  audit-service:
+    build:
+      context: ./backend/audit-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-audit-service
+    environment:
+      - DATABASE_URL=postgresql://audit_user:audit_password@postgres-audit:5432/audit_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-supersecretkey}
+      - GRPC_PORT=50057
+    ports:
+      - "8003:8000"
+      - "50057:50057"
+    networks:
+      - foundry-idp-network
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/audit-service:/app
+      - ./backend/proto:/app/proto
+    command: sh -c "python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. proto/audit.proto && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  auth-service:
+    build:
+      context: ./backend/auth-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-auth-service
+    environment:
+      # Database (shared with monolith)
       DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
-      
+
       # Security
       SECRET_KEY: ${SECRET_KEY:-change-this-secret-key-in-production}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 15
       REFRESH_TOKEN_EXPIRE_DAYS: 7
-      
-      # Redis
-      REDIS_URL: redis://redis:6379/0
-      
-      # Admin credentials
+
+      # gRPC Server
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50051
+
+      # Admin credentials (for initial user creation)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@foundry-idp.com}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin} #change this in production
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123} #change this in production
-      
-      # Plugin system
-      PLUGINS_STORAGE_PATH: /app/storage/plugins
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-      PULUMI_CONFIG_PASSPHRASE: ${PULUMI_CONFIG_PASSPHRASE:-default-passphrase}
-      PULUMI_ACCESS_TOKEN: ${PULUMI_ACCESS_TOKEN:-}
-      PULUMI_ORG: ${PULUMI_ORG:-}
-      PULUMI_ESC_ENVIRONMENT_GCP: ${PULUMI_ESC_ENVIRONMENT_GCP:-}
-      PULUMI_ESC_ENVIRONMENT_AWS: ${PULUMI_ESC_ENVIRONMENT_AWS:-}
-      PULUMI_ESC_ENVIRONMENT_AZURE: ${PULUMI_ESC_ENVIRONMENT_AZURE:-}
-      PULUMI_USE_ESC: ${PULUMI_USE_ESC:-true}
-      
-      # GitOps Configuration
-      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GIT_WORK_DIR: /app/storage/git-repos
-      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-https://github.com/sajjadkhan-academy/idp-templates.git}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
-      MICROSERVICE_REPO_ORG: ${MICROSERVICE_REPO_ORG:-}
-      
-      # Celery Configuration
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      
-      # CORS
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
-      
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin123!@#}
+
       # Debug
       DEBUG: ${DEBUG:-true}
-    volumes:
-      - backend_storage:/app/storage
-      - backend_logs:/app/logs
+    ports:
+      - "50056:50051" # gRPC (for debugging) - Changed external port to 50056 to avoid conflict
+      # REST adapter on port 8000 (internal only, accessed via Kong)
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
     networks:
       - foundry-idp-network
     restart: unless-stopped
 
-  worker:
+  notification-service:
     build:
-      context: ./backend
+      context: ./backend/notification-service
       dockerfile: Dockerfile
-    container_name: foundry-idp-worker
-    command: celery -A app.workers worker --loglevel=info --concurrency=4
+    container_name: foundry-idp-notification-service
     environment:
-      # Database (worker code converts asyncpg to psycopg2 internally)
+      # Database (shared with monolith)
       DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
-      
+
+      # gRPC Server
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50052
+
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    ports:
+      - "50052:50052" # gRPC (for debugging)
+      # REST adapter on port 8000 (internal only, accessed via Kong)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+
+  plugin-service:
+    build:
+      context: ./backend/plugin-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-plugin-service
+    environment:
+      # Database (shared with monolith)
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+
+      # gRPC Server
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50053
+
+      # Storage
+      PLUGINS_STORAGE_PATH: /app/storage/plugins
+
+      # GitOps
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GIT_WORK_DIR: /app/storage/git-repos
+
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    ports:
+      - "50053:50053" # gRPC (for debugging)
+      # REST adapter on port 8000 (internal only, accessed via Kong)
+    volumes:
+      - backend_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+
+  worker-service:
+    build:
+      context: ./backend/worker-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-worker-service
+    environment:
+      # Database (shared with monolith)
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+
+      # gRPC Server
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50054
+
+      # Storage
+      PLUGINS_STORAGE_PATH: /app/storage/plugins
+      GIT_WORK_DIR: /app/storage/git-repos
+
+      # Pulumi
+      PULUMI_CONFIG_PASSPHRASE: ${PULUMI_CONFIG_PASSPHRASE:-default-passphrase}
+      PULUMI_ACCESS_TOKEN: ${PULUMI_ACCESS_TOKEN:-}
+      PULUMI_ORG: ${PULUMI_ORG:-}
+      PULUMI_ESC_ENVIRONMENT_AWS: ${PULUMI_ESC_ENVIRONMENT_AWS:-}
+      PULUMI_ESC_ENVIRONMENT_GCP: ${PULUMI_ESC_ENVIRONMENT_GCP:-}
+      PULUMI_ESC_ENVIRONMENT_AZURE: ${PULUMI_ESC_ENVIRONMENT_AZURE:-}
+      PULUMI_USE_ESC: ${PULUMI_USE_ESC:-true}
+
+      # GitOps
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-}
+      MICROSERVICE_REPO_ORG: ${MICROSERVICE_REPO_ORG:-}
+
+      # Encryption
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
+      # Celery Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    ports:
+      - "50054:50054" # gRPC (for debugging)
+      # REST adapter on port 8000 (internal only, accessed via Kong)
+    volumes:
+      - backend_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+    command: /app/start_services.sh
+
+  worker-celery:
+    build:
+      context: ./backend/worker-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-worker-celery
+    environment:
+      # Database (shared with monolith)
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+
+      # Storage
+      PLUGINS_STORAGE_PATH: /app/storage/plugins
+      GIT_WORK_DIR: /app/storage/git-repos
+
+      # Pulumi
+      PULUMI_CONFIG_PASSPHRASE: ${PULUMI_CONFIG_PASSPHRASE:-default-passphrase}
+      PULUMI_ACCESS_TOKEN: ${PULUMI_ACCESS_TOKEN:-}
+      PULUMI_ORG: ${PULUMI_ORG:-}
+      PULUMI_ESC_ENVIRONMENT_AWS: ${PULUMI_ESC_ENVIRONMENT_AWS:-}
+      PULUMI_ESC_ENVIRONMENT_GCP: ${PULUMI_ESC_ENVIRONMENT_GCP:-}
+      PULUMI_ESC_ENVIRONMENT_AZURE: ${PULUMI_ESC_ENVIRONMENT_AZURE:-}
+      PULUMI_USE_ESC: ${PULUMI_USE_ESC:-true}
+
+      # GitOps
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-}
+      MICROSERVICE_REPO_ORG: ${MICROSERVICE_REPO_ORG:-}
+
+      # Encryption
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
+      # Celery Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    volumes:
+      - backend_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker-service:
+        condition: service_started
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+    command: celery -A app.workers worker --loglevel=info --concurrency=4
+
+  worker-beat:
+    image: foundry-idp-worker-service:latest
+    build:
+      context: ./backend/worker-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-worker-beat
+    environment:
+      # Database (shared with monolith)
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+
       # Security
       SECRET_KEY: ${SECRET_KEY:-change-this-secret-key-in-production}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 15
       REFRESH_TOKEN_EXPIRE_DAYS: 7
-      
+
       # Redis
       REDIS_URL: redis://redis:6379/0
-      
+
       # Admin credentials
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@foundry-idp.com}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
-      
+
       # Plugin system
       PLUGINS_STORAGE_PATH: /app/storage/plugins
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
@@ -141,47 +322,93 @@ services:
       PULUMI_ESC_ENVIRONMENT_AWS: ${PULUMI_ESC_ENVIRONMENT_AWS:-}
       PULUMI_ESC_ENVIRONMENT_AZURE: ${PULUMI_ESC_ENVIRONMENT_AZURE:-}
       PULUMI_USE_ESC: ${PULUMI_USE_ESC:-true}
-      
-      # GitOps Configuration
+
+      # GitOps
       GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GIT_WORK_DIR: /app/storage/git-repos
-      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-https://github.com/sajjadkhan-academy/idp-templates.git}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      GITHUB_TEMPLATE_REPO_URL: ${GITHUB_TEMPLATE_REPO_URL:-}
       MICROSERVICE_REPO_ORG: ${MICROSERVICE_REPO_ORG:-}
-      
+
       # Celery Configuration
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
-      
-      # CORS
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
-      
-      # AWS Configuration
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      
-      # GCP Configuration
-      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
-      GCP_BILLING_ACCOUNT_ID: ${GCP_BILLING_ACCOUNT_ID:-}
-      
+
       # Debug
       DEBUG: ${DEBUG:-true}
     volumes:
       - backend_storage:/app/storage
-      - backend_logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      backend:
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+    command: /app/start_beat.sh
+
+  deployment-service:
+    build:
+      context: ./backend/deployment-service
+      dockerfile: Dockerfile
+    container_name: foundry-idp-deployment-service
+    environment:
+      # Database (shared with monolith)
+      DATABASE_URL: postgresql+asyncpg://default_user:default_password@postgres:5432/devplatform_idp
+
+      # gRPC Server
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50055
+
+      # Audit Service
+      AUDIT_SERVICE_URL: http://audit-service:8000
+
+      # Debug
+      DEBUG: ${DEBUG:-true}
+    ports:
+      - "50055:50055" # gRPC (for debugging)
+      # REST adapter on port 8000 (internal only, accessed via Kong)
+    depends_on:
+      postgres:
         condition: service_healthy
+      audit-service:
+        condition: service_started
+    networks:
+      - foundry-idp-network
+    restart: unless-stopped
+
+  kong:
+    build:
+      context: ./backend/kong
+      dockerfile: Dockerfile
+    container_name: foundry-idp-kong
+    ports:
+      - "8000:8000" # API Gateway (main entry point for frontend)
+      - "8001:8001" # Admin API
+    environment:
+      KONG_DATABASE: off
+      KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      - ./backend/kong/kong.yml:/usr/local/kong/declarative/kong.yml:ro
+    depends_on:
+      - auth-service
+      - notification-service
+      - plugin-service
+      - worker-service
+      - worker-beat
+      - deployment-service
+      # Removed: backend (monolith removed)
     networks:
       - foundry-idp-network
     restart: unless-stopped
 
   frontend:
+    image: foundry-idp-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -193,20 +420,26 @@ services:
     environment:
       - VITE_API_URL=http://localhost:8000
     depends_on:
-      backend:
-        condition: service_healthy
+      kong:
+        condition: service_started
     networks:
       - foundry-idp-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 volumes:
   postgres_data:
     driver: local
+  postgres_audit_data:
+    driver: local
   redis_data:
     driver: local
   backend_storage:
-    driver: local
-  backend_logs:
     driver: local
 
 networks:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, CheckCircle2, XCircle, Clock, Loader, MessageCircle, UserX, AlertTriangle, Box } from 'lucide-react';
+import { Search, CheckCircle2, XCircle, Clock, Loader2, MessageCircle, UserX, AlertTriangle, Box } from 'lucide-react';
 import api from '../services/api';
 import { useNotification } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -65,17 +65,28 @@ export const PluginRequestsPage: React.FC = () => {
             // Pass search query and status filter to backend
             const searchParam = debouncedSearch.trim() || undefined;
             const statusParam = statusFilter !== 'all' ? statusFilter : undefined;
-            const requestsData = await api.getAllAccessRequests(searchParam, statusParam);
-            
+            const response = await api.getAllAccessRequests(searchParam, statusParam) as any;
+
+
+
+            // Backend returns {requests: [...], total: ...}, extract the requests array
+            const requestsData = response?.requests || response || [];
+            const requestsArray = Array.isArray(requestsData) ? requestsData : [];
+
+
+
             // Additional frontend filter: ensure only requests matching the selected status are shown
             // This is a safety check in case backend filtering isn't perfect
             const filteredRequests = statusFilter !== 'all'
-                ? requestsData.filter(r => r.status.toLowerCase() === statusFilter)
-                : requestsData;
-            
+                ? requestsArray.filter(r => r.status && r.status.toLowerCase() === statusFilter)
+                : requestsArray;
+
+
             setRequests(filteredRequests);
         } catch (err: any) {
+            console.error('[PluginRequests] Error loading requests:', err);
             addNotification('error', err.message || 'Failed to load access requests');
+            setRequests([]); // Set empty array on error
         } finally {
             setLoading(false);
         }
@@ -96,6 +107,11 @@ export const PluginRequestsPage: React.FC = () => {
     };
 
     const handleRejectAccess = async (request: AccessRequest) => {
+        // Prevent multiple simultaneous calls
+        if (rejectingAccess === request.id) {
+            return;
+        }
+
         if (!confirm(`Are you sure you want to reject the access request from ${request.user_email} for ${request.plugin_name || request.plugin_id}?`)) {
             return;
         }
@@ -120,6 +136,11 @@ export const PluginRequestsPage: React.FC = () => {
 
     const handleRevokeConfirm = async () => {
         if (!selectedRequest) return;
+
+        // Prevent multiple simultaneous calls
+        if (revokingAccess === selectedRequest.id) {
+            return;
+        }
 
         try {
             setRevokingAccess(selectedRequest.id);
@@ -193,16 +214,25 @@ export const PluginRequestsPage: React.FC = () => {
     const loadStatusCounts = async () => {
         try {
             // Fetch all requests without filters to get accurate counts
-            const allRequests = await api.getAllAccessRequests(undefined, undefined);
-            
+            const response = await api.getAllAccessRequests(undefined, undefined) as any;
+
+
+
+            // Backend returns {requests: [...], total: ...}, extract the requests array
+            const allRequests = response?.requests || response || [];
+            const requestsArray = Array.isArray(allRequests) ? allRequests : [];
+
+
+
             setStatusCounts({
-                pending: allRequests.filter(r => r.status.toLowerCase() === 'pending').length,
-                approved: allRequests.filter(r => r.status.toLowerCase() === 'approved').length,
-                rejected: allRequests.filter(r => r.status.toLowerCase() === 'rejected').length,
-                revoked: allRequests.filter(r => r.status.toLowerCase() === 'revoked').length
+                pending: requestsArray.filter(r => r.status.toLowerCase() === 'pending').length,
+                approved: requestsArray.filter(r => r.status.toLowerCase() === 'approved').length,
+                rejected: requestsArray.filter(r => r.status.toLowerCase() === 'rejected').length,
+                revoked: requestsArray.filter(r => r.status.toLowerCase() === 'revoked').length
             });
         } catch (err) {
             // Silently fail - counts are not critical
+            setStatusCounts({ pending: 0, approved: 0, rejected: 0, revoked: 0 });
         }
     };
 
@@ -227,25 +257,23 @@ export const PluginRequestsPage: React.FC = () => {
                         Review, approve, revoke, and restore permission requests for locked plugins.
                     </p>
                 </div>
-                
+
                 {/* Status Filter Buttons */}
                 <div className="flex items-center gap-2">
                     <button
                         onClick={() => setStatusFilter('pending')}
-                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
-                            statusFilter === 'pending'
-                                ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
-                                : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
-                        }`}
+                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${statusFilter === 'pending'
+                            ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
+                            : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
+                            }`}
                     >
                         <span className="flex items-center gap-2">
-                            Pending 
+                            Pending
                             {statusCounts.pending > 0 && (
-                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${
-                                    statusFilter === 'pending' 
-                                        ? 'bg-white/20 text-white' 
-                                        : 'bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                                }`}>
+                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${statusFilter === 'pending'
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-orange-500/10 text-orange-600 dark:text-orange-400'
+                                    }`}>
                                     {statusCounts.pending}
                                 </span>
                             )}
@@ -253,20 +281,18 @@ export const PluginRequestsPage: React.FC = () => {
                     </button>
                     <button
                         onClick={() => setStatusFilter('approved')}
-                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
-                            statusFilter === 'approved'
-                                ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
-                                : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
-                        }`}
+                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${statusFilter === 'approved'
+                            ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
+                            : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
+                            }`}
                     >
                         <span className="flex items-center gap-2">
-                            Approved 
+                            Approved
                             {statusCounts.approved > 0 && (
-                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${
-                                    statusFilter === 'approved' 
-                                        ? 'bg-white/20 text-white' 
-                                        : 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                }`}>
+                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${statusFilter === 'approved'
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-green-500/10 text-green-600 dark:text-green-400'
+                                    }`}>
                                     {statusCounts.approved}
                                 </span>
                             )}
@@ -274,20 +300,18 @@ export const PluginRequestsPage: React.FC = () => {
                     </button>
                     <button
                         onClick={() => setStatusFilter('rejected')}
-                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
-                            statusFilter === 'rejected'
-                                ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
-                                : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
-                        }`}
+                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${statusFilter === 'rejected'
+                            ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
+                            : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
+                            }`}
                     >
                         <span className="flex items-center gap-2">
-                            Rejected 
+                            Rejected
                             {statusCounts.rejected > 0 && (
-                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${
-                                    statusFilter === 'rejected' 
-                                        ? 'bg-white/20 text-white' 
-                                        : 'bg-red-500/10 text-red-600 dark:text-red-400'
-                                }`}>
+                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${statusFilter === 'rejected'
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-red-500/10 text-red-600 dark:text-red-400'
+                                    }`}>
                                     {statusCounts.rejected}
                                 </span>
                             )}
@@ -295,20 +319,18 @@ export const PluginRequestsPage: React.FC = () => {
                     </button>
                     <button
                         onClick={() => setStatusFilter('revoked')}
-                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
-                            statusFilter === 'revoked'
-                                ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
-                                : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
-                        }`}
+                        className={`relative px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${statusFilter === 'revoked'
+                            ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 scale-105'
+                            : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-700'
+                            }`}
                     >
                         <span className="flex items-center gap-2">
-                            Revoked 
+                            Revoked
                             {statusCounts.revoked > 0 && (
-                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${
-                                    statusFilter === 'revoked' 
-                                        ? 'bg-white/20 text-white' 
-                                        : 'bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                                }`}>
+                                <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold ${statusFilter === 'revoked'
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-orange-500/10 text-orange-600 dark:text-orange-400'
+                                    }`}>
                                     {statusCounts.revoked}
                                 </span>
                             )}
@@ -351,7 +373,7 @@ export const PluginRequestsPage: React.FC = () => {
                 <div className="flex flex-col items-center justify-center py-16 bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 rounded-2xl border border-gray-200/50 dark:border-gray-700/50">
                     <div className="relative">
                         <div className="absolute inset-0 bg-gradient-to-r from-orange-500 to-orange-600 rounded-full blur-xl opacity-50 animate-pulse" />
-                        <Loader className="relative w-10 h-10 animate-spin text-orange-500" />
+                        <Loader2 className="relative w-10 h-10 animate-spin text-orange-500" />
                     </div>
                     <p className="mt-4 text-gray-600 dark:text-gray-400 font-medium">Loading access requests...</p>
                 </div>
@@ -372,7 +394,7 @@ export const PluginRequestsPage: React.FC = () => {
                                     >
                                         {/* Decorative gradient overlay */}
                                         <div className="absolute inset-0 bg-gradient-to-r from-orange-500/5 via-transparent to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
-                                        
+
                                         <div className="relative flex items-start gap-5">
                                             {/* User Avatar with glow */}
                                             <div className="flex-shrink-0">
@@ -397,7 +419,7 @@ export const PluginRequestsPage: React.FC = () => {
                                                                 {request.plugin_name || request.plugin_id}
                                                             </span>
                                                         </div>
-                                                        
+
                                                         {/* Metadata */}
                                                         <div className="flex items-center gap-3 text-gray-600 dark:text-gray-400 text-sm">
                                                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-100/80 dark:bg-gray-800/80 border border-gray-200/50 dark:border-gray-700/50">
@@ -434,7 +456,7 @@ export const PluginRequestsPage: React.FC = () => {
                                                             >
                                                                 {grantingAccess === request.id ? (
                                                                     <>
-                                                                        <Loader className="w-4 h-4 animate-spin" />
+                                                                        <Loader2 className="w-4 h-4 animate-spin" />
                                                                         Approving...
                                                                     </>
                                                                 ) : (
@@ -451,7 +473,7 @@ export const PluginRequestsPage: React.FC = () => {
                                                             >
                                                                 {rejectingAccess === request.id ? (
                                                                     <>
-                                                                        <Loader className="w-4 h-4 animate-spin" />
+                                                                        <Loader2 className="w-4 h-4 animate-spin" />
                                                                         Rejecting...
                                                                     </>
                                                                 ) : (
@@ -497,7 +519,7 @@ export const PluginRequestsPage: React.FC = () => {
                                                                     >
                                                                         {restoringAccess === request.id ? (
                                                                             <>
-                                                                                <Loader className="w-4 h-4 animate-spin" />
+                                                                                <Loader2 className="w-4 h-4 animate-spin" />
                                                                                 Restoring...
                                                                             </>
                                                                         ) : (
@@ -579,7 +601,7 @@ export const PluginRequestsPage: React.FC = () => {
                     <div className="relative bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl p-8 max-w-md w-full shadow-2xl animate-in zoom-in duration-300">
                         {/* Decorative gradient */}
                         <div className="absolute inset-0 bg-gradient-to-br from-red-500/5 via-transparent to-orange-500/5 rounded-2xl pointer-events-none" />
-                        
+
                         {/* Warning Icon */}
                         <div className="relative flex items-start gap-4 mb-6">
                             <div className="relative flex-shrink-0">
@@ -642,7 +664,7 @@ export const PluginRequestsPage: React.FC = () => {
                             >
                                 {revokingAccess === selectedRequest.id ? (
                                     <>
-                                        <Loader className="w-4 h-4 animate-spin" />
+                                        <Loader2 className="w-4 h-4 animate-spin" />
                                         Revoking...
                                     </>
                                 ) : (

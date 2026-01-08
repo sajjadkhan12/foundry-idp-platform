@@ -16,9 +16,9 @@ const PluginUpload: React.FC = () => {
     const [version, setVersion] = useState('');
     const [description, setDescription] = useState('');
     const [dragActive, setDragActive] = useState(false);
-    // Microservice-specific fields
     const [templateRepoUrl, setTemplateRepoUrl] = useState('');
     const [templatePath, setTemplatePath] = useState('');
+    const [templateInputs, setTemplateInputs] = useState<{ key: string, name: string, type: string, default: string }[]>([]);
 
     useEffect(() => {
         if (!authLoading && !isAdmin && !hasPermission('platform:plugins:upload')) {
@@ -137,17 +137,30 @@ const PluginUpload: React.FC = () => {
             } else {
                 // Microservice template upload
                 const pluginId = slugify(pluginName);
+                const manifestInputs = templateInputs.length > 0 ? {
+                    properties: templateInputs.reduce((acc: any, input) => {
+                        acc[input.key] = {
+                            title: input.name,
+                            type: input.type,
+                            default: input.default
+                        };
+                        return acc;
+                    }, {}),
+                    required: templateInputs.map(i => i.key)
+                } : undefined;
+
                 const result = await api.uploadMicroserviceTemplate({
                     plugin_id: pluginId,
                     name: pluginName,
                     version: version,
                     description: description,
                     template_repo_url: templateRepoUrl,
-                    template_path: templatePath
+                    template_path: templatePath,
+                    inputs: manifestInputs
                 });
                 setSuccess(`✅ Microservice template "${result.plugin_id || pluginName}" v${result.version || version} created successfully.`);
             }
-            
+
             // Reset form
             setFile(null);
             setPluginName('');
@@ -155,6 +168,7 @@ const PluginUpload: React.FC = () => {
             setDescription('');
             setTemplateRepoUrl('');
             setTemplatePath('');
+            setTemplateInputs([]);
             // Reset file input
             const fileInput = document.getElementById('plugin-file') as HTMLInputElement;
             if (fileInput) fileInput.value = '';
@@ -191,11 +205,10 @@ const PluginUpload: React.FC = () => {
                                     setFile(null);
                                     setError(null);
                                 }}
-                                className={`flex-1 flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-medium transition-all ${
-                                    deploymentType === 'infrastructure'
+                                className={`flex-1 flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-medium transition-all ${deploymentType === 'infrastructure'
                                         ? 'bg-orange-600 text-white shadow-lg shadow-orange-500/30'
                                         : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                                }`}
+                                    }`}
                             >
                                 <Server className="w-5 h-5" />
                                 Infrastructure
@@ -207,11 +220,10 @@ const PluginUpload: React.FC = () => {
                                     setFile(null);
                                     setError(null);
                                 }}
-                                className={`flex-1 flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-medium transition-all ${
-                                    deploymentType === 'microservice'
+                                className={`flex-1 flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-medium transition-all ${deploymentType === 'microservice'
                                         ? 'bg-orange-600 text-white shadow-lg shadow-orange-500/30'
                                         : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                                }`}
+                                    }`}
                             >
                                 <Box className="w-5 h-5" />
                                 Microservice Template
@@ -298,6 +310,89 @@ const PluginUpload: React.FC = () => {
                                         Subdirectory path in the repository (e.g., "python-service" for idp-templates/python-service)
                                     </p>
                                 </div>
+
+                                {/* Template Inputs Section */}
+                                <div className="pt-4 mt-4 border-t border-gray-100 dark:border-gray-800">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <div>
+                                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Template Variables</h3>
+                                            <p className="text-xs text-gray-500">Define variables that users can configure (use as {"{{ key }}"} in your code)</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setTemplateInputs([...templateInputs, { key: '', name: '', type: 'string', default: '' }])}
+                                            className="text-xs px-2.5 py-1.5 bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-500/20 font-medium transition-colors"
+                                        >
+                                            + Add Variable
+                                        </button>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        {templateInputs.map((input, index) => (
+                                            <div key={index} className="flex gap-3 items-start bg-gray-50 dark:bg-gray-800/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800">
+                                                <div className="flex-1 space-y-3">
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Key (e.g. app_port)"
+                                                            value={input.key}
+                                                            onChange={(e) => {
+                                                                const newInputs = [...templateInputs];
+                                                                newInputs[index].key = e.target.value;
+                                                                setTemplateInputs(newInputs);
+                                                            }}
+                                                            className="w-full px-3 py-1.5 text-xs rounded-md bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Label (e.g. Application Port)"
+                                                            value={input.name}
+                                                            onChange={(e) => {
+                                                                const newInputs = [...templateInputs];
+                                                                newInputs[index].name = e.target.value;
+                                                                setTemplateInputs(newInputs);
+                                                            }}
+                                                            className="w-full px-3 py-1.5 text-xs rounded-md bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                                                        />
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <select
+                                                            value={input.type}
+                                                            onChange={(e) => {
+                                                                const newInputs = [...templateInputs];
+                                                                newInputs[index].type = e.target.value;
+                                                                setTemplateInputs(newInputs);
+                                                            }}
+                                                            className="w-full px-3 py-1.5 text-xs rounded-md bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                                                        >
+                                                            <option value="string">String</option>
+                                                            <option value="number">Number</option>
+                                                            <option value="boolean">Boolean</option>
+                                                        </select>
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Default Value"
+                                                            value={input.default}
+                                                            onChange={(e) => {
+                                                                const newInputs = [...templateInputs];
+                                                                newInputs[index].default = e.target.value;
+                                                                setTemplateInputs(newInputs);
+                                                            }}
+                                                            className="w-full px-3 py-1.5 text-xs rounded-md bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setTemplateInputs(templateInputs.filter((_, i) => i !== index))}
+                                                    className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"
+                                                >
+                                                    <AlertCircle className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
                             </div>
                         )}
 
@@ -321,58 +416,58 @@ const PluginUpload: React.FC = () => {
                         <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
                             <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">Plugin Package (.zip)</h2>
 
-                        {/* Drag & Drop Zone */}
-                        <div
-                            onDragEnter={handleDrag}
-                            onDragLeave={handleDrag}
-                            onDragOver={handleDrag}
-                            onDrop={handleDrop}
-                            className={`relative border-2 border-dashed rounded-lg p-8 text-center transition-all ${dragActive
-                                ? 'border-orange-500 bg-orange-50 dark:bg-orange-500/10'
-                                : 'border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-600'
-                                }`}
-                        >
-                            <input
-                                id="plugin-file"
-                                type="file"
-                                accept=".zip"
-                                onChange={handleFileChange}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                            />
+                            {/* Drag & Drop Zone */}
+                            <div
+                                onDragEnter={handleDrag}
+                                onDragLeave={handleDrag}
+                                onDragOver={handleDrag}
+                                onDrop={handleDrop}
+                                className={`relative border-2 border-dashed rounded-lg p-8 text-center transition-all ${dragActive
+                                    ? 'border-orange-500 bg-orange-50 dark:bg-orange-500/10'
+                                    : 'border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-600'
+                                    }`}
+                            >
+                                <input
+                                    id="plugin-file"
+                                    type="file"
+                                    accept=".zip"
+                                    onChange={handleFileChange}
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                />
 
-                            <div className="flex flex-col items-center">
-                                <div className="w-16 h-16 bg-orange-100 dark:bg-orange-500/20 rounded-full flex items-center justify-center mb-4">
-                                    <Upload className="w-8 h-8 text-orange-600 dark:text-orange-400" />
-                                </div>
-                                <p className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-                                    Drag & drop your plugin ZIP file
-                                </p>
-                                <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                                    or click to browse
-                                </p>
-                                <p className="text-xs text-gray-400 dark:text-gray-500">
-                                    Maximum file size: 50MB
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* File Info */}
-                        {file && (
-                            <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                        <FileArchive className="w-5 h-5 text-orange-600 dark:text-orange-400" />
-                                        <div>
-                                            <p className="font-medium text-gray-900 dark:text-white">{file.name}</p>
-                                            <p className="text-sm text-gray-500 dark:text-gray-400">
-                                                {(file.size / 1024).toFixed(2)} KB
-                                            </p>
-                                        </div>
+                                <div className="flex flex-col items-center">
+                                    <div className="w-16 h-16 bg-orange-100 dark:bg-orange-500/20 rounded-full flex items-center justify-center mb-4">
+                                        <Upload className="w-8 h-8 text-orange-600 dark:text-orange-400" />
                                     </div>
-                                    <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-green-400" />
+                                    <p className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                                        Drag & drop your plugin ZIP file
+                                    </p>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                                        or click to browse
+                                    </p>
+                                    <p className="text-xs text-gray-400 dark:text-gray-500">
+                                        Maximum file size: 50MB
+                                    </p>
                                 </div>
                             </div>
-                        )}
+
+                            {/* File Info */}
+                            {file && (
+                                <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <FileArchive className="w-5 h-5 text-orange-600 dark:text-orange-400" />
+                                            <div>
+                                                <p className="font-medium text-gray-900 dark:text-white">{file.name}</p>
+                                                <p className="text-sm text-gray-500 dark:text-gray-400">
+                                                    {(file.size / 1024).toFixed(2)} KB
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-green-400" />
+                                    </div>
+                                </div>
+                            )}
 
                         </div>
                     )}
@@ -396,11 +491,10 @@ const PluginUpload: React.FC = () => {
                     <button
                         onClick={handleUpload}
                         disabled={uploading || (deploymentType === 'infrastructure' && !file) || (deploymentType === 'microservice' && (!templateRepoUrl || !templatePath))}
-                        className={`w-full py-3 px-4 rounded-lg font-medium transition-all ${
-                            !uploading && ((deploymentType === 'infrastructure' && file) || (deploymentType === 'microservice' && templateRepoUrl && templatePath))
+                        className={`w-full py-3 px-4 rounded-lg font-medium transition-all ${!uploading && ((deploymentType === 'infrastructure' && file) || (deploymentType === 'microservice' && templateRepoUrl && templatePath))
                                 ? 'bg-orange-600 hover:bg-orange-700 text-white shadow-lg shadow-orange-500/30'
                                 : 'bg-gray-200 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed'
-                        }`}
+                            }`}
                     >
                         {uploading ? (
                             <span className="flex items-center justify-center gap-2">
@@ -459,37 +553,37 @@ const PluginUpload: React.FC = () => {
                                     <Code className="w-5 h-5 text-orange-500 dark:text-orange-400" />
                                     <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Structure Guide</h3>
                                 </div>
-                        <div className="bg-gradient-to-br from-gray-900 via-slate-900 to-gray-950 rounded-lg p-4 font-mono text-xs border border-gray-800">
-                            <div className="text-gray-400 space-y-1">
-                                <div className="text-amber-300 font-semibold">
-                                    my-plugin/
-                                </div>
-                                <div className="pl-4 flex items-center gap-2">
-                                    <span className="w-3 h-px bg-amber-400/60 rounded"></span>
-                                    <span className="text-sky-300">plugin.yaml</span>
-                                </div>
-                                <div className="pl-4 flex items-center gap-2">
-                                    <span className="w-3 h-px bg-amber-400/60 rounded"></span>
-                                    <span className="text-sky-300">Pulumi.yaml</span>
-                                </div>
-                                <div className="pl-4 flex items-center gap-2">
-                                    <span className="w-3 h-px bg-emerald-400/60 rounded"></span>
-                                    <span className="text-emerald-300">__main__.py</span>
-                                </div>
-                                <div className="pl-8 flex items-center gap-2">
-                                    <span className="w-3 h-px bg-gray-500/70 rounded"></span>
-                                    <span className="text-gray-300">requirements.txt</span>
-                                </div>
-                                <div className="pl-4 text-amber-300 font-semibold pt-1">
-                                    assets/
-                                </div>
-                                <div className="pl-8 flex items-center gap-2">
-                                    <span className="w-3 h-px bg-sky-400/70 rounded"></span>
-                                    <span className="text-sky-300">icon.png</span>
+                                <div className="bg-gradient-to-br from-gray-900 via-slate-900 to-gray-950 rounded-lg p-4 font-mono text-xs border border-gray-800">
+                                    <div className="text-gray-400 space-y-1">
+                                        <div className="text-amber-300 font-semibold">
+                                            my-plugin/
+                                        </div>
+                                        <div className="pl-4 flex items-center gap-2">
+                                            <span className="w-3 h-px bg-amber-400/60 rounded"></span>
+                                            <span className="text-sky-300">plugin.yaml</span>
+                                        </div>
+                                        <div className="pl-4 flex items-center gap-2">
+                                            <span className="w-3 h-px bg-amber-400/60 rounded"></span>
+                                            <span className="text-sky-300">Pulumi.yaml</span>
+                                        </div>
+                                        <div className="pl-4 flex items-center gap-2">
+                                            <span className="w-3 h-px bg-emerald-400/60 rounded"></span>
+                                            <span className="text-emerald-300">__main__.py</span>
+                                        </div>
+                                        <div className="pl-8 flex items-center gap-2">
+                                            <span className="w-3 h-px bg-gray-500/70 rounded"></span>
+                                            <span className="text-gray-300">requirements.txt</span>
+                                        </div>
+                                        <div className="pl-4 text-amber-300 font-semibold pt-1">
+                                            assets/
+                                        </div>
+                                        <div className="pl-8 flex items-center gap-2">
+                                            <span className="w-3 h-px bg-sky-400/70 rounded"></span>
+                                            <span className="text-sky-300">icon.png</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                    </div>
 
                             {/* Example Manifest */}
                             <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">

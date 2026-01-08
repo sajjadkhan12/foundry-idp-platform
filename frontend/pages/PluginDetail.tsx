@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { BusinessUnitWarningModal } from '../components/BusinessUnitWarningModal';
-import { ArrowLeft, Download, ExternalLink, ShieldCheck, Tag, Trash2, Loader } from 'lucide-react';
+import { ArrowLeft, Download, ExternalLink, ShieldCheck, Tag, Trash2, Loader2 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -70,7 +70,7 @@ export const PluginDetailPage: React.FC = () => {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <Loader className="w-10 h-10 text-orange-600 dark:text-orange-400 animate-spin mb-4" />
+        <Loader2 className="w-10 h-10 text-orange-600 dark:text-orange-400 animate-spin mb-4" />
         <p className="text-gray-600 dark:text-gray-400">Loading plugin...</p>
       </div>
     );
@@ -225,7 +225,7 @@ export const PluginDetailPage: React.FC = () => {
               >
                 {isDeleting ? (
                   <>
-                    <Loader className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin" />
                     Deleting...
                   </>
                 ) : (

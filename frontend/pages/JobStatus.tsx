@@ -35,21 +35,57 @@ const JobStatus: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (jobId) {
+        if (jobId && jobId !== 'undefined') {
             loadJob();
             const interval = setInterval(loadJob, 3000); // Poll every 3 seconds
             return () => clearInterval(interval);
+        } else {
+            setError('Invalid job ID');
+            setLoading(false);
         }
     }, [jobId]);
 
     const loadJob = async () => {
+        if (!jobId || jobId === 'undefined') {
+            setError('Invalid job ID');
+            setLoading(false);
+            return;
+        }
         try {
             const [jobData, logsData] = await Promise.all([
-                api.getJob(jobId!),
-                api.getJobLogs(jobId!)
+                api.getJob(jobId),
+                api.getJobLogs(jobId)
             ]);
+            
+            // Parse inputs and outputs if they are JSON strings
+            if (jobData.inputs && typeof jobData.inputs === 'string') {
+                try {
+                    jobData.inputs = JSON.parse(jobData.inputs);
+                } catch (e) {
+                    // If parsing fails, keep as string or set to empty object
+                    jobData.inputs = {};
+                }
+            }
+            if (jobData.outputs && typeof jobData.outputs === 'string') {
+                try {
+                    jobData.outputs = JSON.parse(jobData.outputs);
+                } catch (e) {
+                    // If parsing fails, keep as string or set to empty object
+                    jobData.outputs = {};
+                }
+            }
+            
+            // Ensure inputs and outputs are objects
+            if (!jobData.inputs || typeof jobData.inputs !== 'object') {
+                jobData.inputs = {};
+            }
+            if (!jobData.outputs || typeof jobData.outputs !== 'object') {
+                jobData.outputs = {};
+            }
+            
             setJob(jobData);
-            setLogs(logsData);
+            // Handle both array and object with logs property
+            setLogs(Array.isArray(logsData) ? logsData : (logsData?.logs || []));
             setLoading(false);
         } catch (err: any) {
             setError(err.message || 'Failed to load job');
@@ -234,7 +270,7 @@ const JobStatus: React.FC = () => {
                         <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 transition-colors">
                             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Inputs</h3>
                             <div className="space-y-3">
-                                {Object.entries(job.inputs).map(([key, value]) => (
+                                {job.inputs && typeof job.inputs === 'object' && Object.entries(job.inputs).map(([key, value]) => (
                                     <div key={key} className="group">
                                         <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1 group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors">
                                             {key.replace(/_/g, ' ')}
@@ -252,7 +288,7 @@ const JobStatus: React.FC = () => {
                             <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 transition-colors">
                                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Outputs</h3>
                                 <div className="space-y-3">
-                                    {Object.entries(job.outputs).map(([key, value]) => (
+                                    {job.outputs && typeof job.outputs === 'object' && Object.entries(job.outputs).map(([key, value]) => (
                                         <div key={key} className="group">
                                             <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1 group-hover:text-green-600 dark:group-hover:text-green-400 transition-colors">
                                                 {key}

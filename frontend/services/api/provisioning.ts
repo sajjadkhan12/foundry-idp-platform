@@ -52,19 +52,21 @@ export const provisioningApi = {
         return apiClient.request(`/api/v1/provision/jobs/${jobId}/logs`);
     },
 
-    async listJobs(params?: { 
-        jobId?: string; 
+    async listJobs(params?: {
+        jobId?: string;
         email?: string;
         startDate?: string;
         endDate?: string;
+        businessUnitId?: string;
         skip?: number;
-        limit?: number 
+        limit?: number
     }) {
         const queryParams = new URLSearchParams();
         if (params?.jobId) queryParams.append('job_id', params.jobId);
         if (params?.email) queryParams.append('email', params.email);
         if (params?.startDate) queryParams.append('start_date', params.startDate);
         if (params?.endDate) queryParams.append('end_date', params.endDate);
+        if (params?.businessUnitId) queryParams.append('business_unit_id', params.businessUnitId);
         if (params?.skip !== undefined) queryParams.append('skip', params.skip.toString());
         if (params?.limit) queryParams.append('limit', params.limit.toString());
         const query = queryParams.toString();

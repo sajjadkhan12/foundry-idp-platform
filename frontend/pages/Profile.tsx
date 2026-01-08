@@ -201,7 +201,7 @@ export const ProfilePage: React.FC = () => {
                     <div className="relative group">
                         {avatarPreview || (user?.avatar_url && user.avatar_url.trim() !== '' && !user.avatar_url.includes('data:;base64,=')) ? (
                             <img
-                                src={avatarPreview || (user?.avatar_url?.startsWith('http') ? user.avatar_url : `${API_URL}${user?.avatar_url}`)}
+                                src={avatarPreview || (user?.avatar_url?.startsWith('http') || user?.avatar_url?.startsWith('data:') ? user.avatar_url : `${API_URL}${user?.avatar_url}`)}
                                 alt="Profile Preview"
                                 className="w-24 h-24 rounded-full border-4 border-white dark:border-gray-800 shadow-xl object-cover"
                                 onError={(e) => {

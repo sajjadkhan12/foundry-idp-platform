@@ -15,7 +15,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useApp();
-  const { user, logout, isAdmin, isOwner, businessUnits, hasPermission } = useAuth();
+  const { user, logout, isAdmin, isOwner, businessUnits, hasPermission, activeBusinessUnit } = useAuth();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -69,110 +69,97 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Custom Logo Component for Foundry
   const FoundryLogo = () => (
     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="text-orange-600 dark:text-orange-500">
-      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M10 9L15 12L10 15V9Z" fill="currentColor" stroke="none" />
     </svg>
   );
 
-  const SidebarContent = () => (
-    <>
-      <div className="flex items-center gap-3 px-6 h-20 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
-        <FoundryLogo />
-        <span className="font-bold text-2xl tracking-tight text-gray-900 dark:text-white font-sans">FOUNDRY</span>
-      </div>
+    const SidebarContent = () => {
 
-      <div className="flex-1 overflow-y-auto py-6 px-3 scrollbar-hide">
-        <nav className="space-y-1">
-          {navItems.map((item) => {
-            const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
-            return (
-              <Link
-                key={item.name}
-                to={item.path}
-                onClick={() => setIsMobileMenuOpen(false)}
-                className={`group flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${isActive
-                  ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-                  }`}
-              >
-                <item.icon className={`w-5 h-5 ${isActive ? 'text-orange-600 dark:text-orange-400' : 'text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300'}`} />
-                {item.name}
-                {isActive && <ChevronRight className="w-4 h-4 ml-auto text-orange-400" />}
-              </Link>
-            );
-          })}
-        </nav>
+    const NavItem = ({ item, isSubItem = false, isFlyout = false }: { item: any; isSubItem?: boolean; isFlyout?: boolean }) => {
+      const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
+      return (
+        <Link
+          to={item.path}
+          onClick={() => setIsMobileMenuOpen(false)}
+          className={`group flex items-center gap-3 ${isFlyout ? 'px-4' : isSubItem ? 'pl-11 pr-3' : 'px-3'} py-2 text-sm font-medium rounded-lg transition-all duration-200 ${isActive
+            ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
+            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
+            }`}
+        >
+          <div className="w-5 flex items-center justify-center">
+            <item.icon className={`w-5 h-5 ${isActive ? 'text-orange-600 dark:text-orange-400' : 'text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300'}`} />
+          </div>
+          <span className="truncate">{item.name}</span>
+          {isActive && !isSubItem && !isFlyout && <ChevronRight className="w-4 h-4 ml-auto text-orange-400" />}
+        </Link>
+      );
+    };
 
-        <div className="mt-8 pt-8 border-t border-gray-200 dark:border-gray-800 px-3">
-          {/* Business Units link - visible to owners and admins */}
-          {(isOwner || isAdmin) && (
-            <Link 
-              to="/business-units" 
-              className={`group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                location.pathname === '/business-units' || location.pathname === '/admin/business-units'
-                  ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              <Building2 className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-              Business Units
-            </Link>
-          )}
-          {isAdmin && (
-            <>
-              <Link to="/all-deployments" className={`group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                location.pathname === '/all-deployments'
-                  ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-              }`}>
-                <Server className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-                All Deployments
-              </Link>
-              <Link to="/admin/jobs" className={`group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                location.pathname === '/admin/jobs'
-                  ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-              }`}>
-                <Activity className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-                All Jobs
-              </Link>
-              <Link to="/admin/audit-logs" className={`group flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                location.pathname === '/admin/audit-logs'
-                  ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
-              }`}>
-                <FileText className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-                Audit Logs
-              </Link>
-              <div className="my-2 border-t border-gray-200 dark:border-gray-700" />
-              <Link to="/settings" className="group flex items-center gap-3 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white transition-colors">
-                <Settings className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-                Settings
-              </Link>
-            </>
-          )}
-          <a href="#" className="group flex items-center gap-3 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white transition-colors">
-            <Book className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-            Documentation
-          </a>
-          <Link to="/profile" className="group flex items-center gap-3 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white transition-colors">
-            <User className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
-            Profile
-          </Link>
+
+    return (
+      <>
+        <div className="flex items-center gap-3 px-6 h-20 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
+          <FoundryLogo />
+          <span className="font-bold text-2xl tracking-tight text-gray-900 dark:text-white font-sans">FOUNDRY</span>
         </div>
-      </div>
 
-      <div className="p-4 border-t border-gray-200 dark:border-gray-800">
-        <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4 border border-gray-200 dark:border-gray-700/50">
-          <h4 className="text-xs font-semibold text-gray-900 dark:text-white mb-1">Status</h4>
-          <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-            Systems Operational
+        <div className="flex-1 overflow-y-auto py-6 px-3 scrollbar-hide">
+          <nav className="space-y-1">
+            <NavItem item={{ name: 'Overview', path: '/', icon: Activity }} />
+
+            {isAdmin && (
+              <NavItem item={{ name: 'Admin Dashboard', path: '/admin-dashboard', icon: Shield }} />
+            )}
+
+            <NavItem item={{ name: 'Service Catalog', path: '/services', icon: LayoutGrid }} />
+
+            <NavItem item={{ name: 'Deployments', path: '/deployments', icon: Server }} />
+
+            {isAdmin && (
+              <NavItem item={{ name: 'Jobs', path: '/admin/jobs', icon: Activity }} />
+            )}
+
+            <NavItem item={{ name: 'Cost Analysis', path: '/costs', icon: PieChart }} />
+          </nav>
+
+          <div className="mt-8 pt-8 border-t border-gray-200 dark:border-gray-800 px-3 space-y-1">
+            <h3 className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Management</h3>
+
+            {(isOwner || isAdmin) && (
+              <NavItem item={{ name: 'Business Unit Management', path: '/admin/business-units', icon: Building2 }} />
+            )}
+
+            {isAdmin && (
+              <>
+                <div className="my-2 border-t border-gray-200 dark:border-gray-700 mx-3" />
+                <NavItem item={{ name: 'Settings', path: '/settings', icon: Settings }} />
+              </>
+            )}
+
+            <a href="#" className="group flex items-center gap-3 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white transition-colors">
+              <div className="w-5 flex items-center justify-center">
+                <Book className="w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" />
+              </div>
+              Documentation
+            </a>
+
+            <NavItem item={{ name: 'Profile', path: '/profile', icon: User }} />
           </div>
         </div>
-      </div>
-    </>
-  );
+
+        <div className="p-4 border-t border-gray-200 dark:border-gray-800">
+          <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4 border border-gray-200 dark:border-gray-700/50">
+            <h4 className="text-xs font-semibold text-gray-900 dark:text-white mb-1">Status</h4>
+            <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+              Systems Operational
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  };
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-950 transition-colors duration-300 overflow-hidden">
@@ -203,37 +190,65 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             {/* Plugins Dropdown - Visible to Admins, Owners, or users with upload permission */}
             {(isAdmin || isOwner || hasPermission('platform:plugins:upload')) && (
               <div ref={dropdownRef} className="hidden md:flex items-center">
-              <div className="relative">
-                <button
-                  onClick={() => setOpenDropdown(openDropdown === 'plugins' ? null : 'plugins')}
-                  className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
-                    openDropdown === 'plugins' || location.pathname.startsWith('/plugin') || location.pathname.startsWith('/admin/plugin')
+                <div className="relative">
+                  <button
+                    onClick={() => setOpenDropdown(openDropdown === 'plugins' ? null : 'plugins')}
+                    className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${openDropdown === 'plugins' || location.pathname.startsWith('/plugin') || location.pathname.startsWith('/admin/plugin')
                       ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                       : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                  }`}
-                >
-                  <Package className="w-4 h-4" />
-                  <span>Plugins</span>
-                  <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${openDropdown === 'plugins' ? 'rotate-180' : ''}`} />
-                </button>
-
-                {openDropdown === 'plugins' && (
-                  <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-lg py-2 border border-gray-200 dark:border-gray-800 ring-1 ring-black ring-opacity-5 z-50 animate-in fade-in zoom-in-95 duration-150 origin-top-left">
-                    <Link
-                      to="/admin/plugin-requests"
-                      onClick={() => setOpenDropdown(null)}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                        location.pathname === '/admin/plugin-requests'
-                          ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                          : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
                       }`}
-                    >
-                      <Lock className="w-4 h-4" />
-                      <span>Plugin Requests</span>
-                    </Link>
-                    {(isAdmin || hasPermission('platform:plugins:upload')) && (
+                  >
+                    <Package className="w-4 h-4" />
+                    <span>Plugins</span>
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${openDropdown === 'plugins' ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {openDropdown === 'plugins' && (
+                    <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-lg py-2 border border-gray-200 dark:border-gray-800 ring-1 ring-black ring-opacity-5 z-50 animate-in fade-in zoom-in-95 duration-150 origin-top-left">
+                      {(isAdmin || isOwner) && (
+                        <Link
+                          to="/admin/plugin-requests"
+                          onMouseDown={(e) => {
+                            // Prevent the mousedown from triggering the outside click handler
+                            e.stopPropagation();
+                          }}
+                          onClick={(e) => {
+                            // Stop propagation to prevent dropdown from closing before navigation
+                            e.stopPropagation();
+                            setOpenDropdown(null);
+                          }}
+                          className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/admin/plugin-requests'
+                            ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
+                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                            }`}
+                        >
+                          <Lock className="w-4 h-4" />
+                          <span>Plugin Requests</span>
+                        </Link>
+                      )}
+                      {(isAdmin || hasPermission('platform:plugins:upload')) && (
+                        <Link
+                          to="/plugin-upload"
+                          onMouseDown={(e) => {
+                            // Prevent the mousedown from triggering the outside click handler
+                            e.stopPropagation();
+                          }}
+                          onClick={(e) => {
+                            // Stop propagation to prevent dropdown from closing before navigation
+                            e.stopPropagation();
+                            setOpenDropdown(null);
+                          }}
+                          className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/plugin-upload'
+                            ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
+                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                            }`}
+                        >
+                          <Upload className="w-4 h-4" />
+                          <span>Upload Plugin</span>
+                        </Link>
+                      )}
                       <Link
-                        to="/plugin-upload"
+                        to="/services"
                         onMouseDown={(e) => {
                           // Prevent the mousedown from triggering the outside click handler
                           e.stopPropagation();
@@ -243,105 +258,86 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                           e.stopPropagation();
                           setOpenDropdown(null);
                         }}
-                        className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                          location.pathname === '/plugin-upload'
-                            ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
-                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                        }`}
-                      >
-                        <Upload className="w-4 h-4" />
-                        <span>Upload Plugin</span>
-                      </Link>
-                    )}
-                    <Link
-                      to="/services"
-                      onClick={() => setOpenDropdown(null)}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                        location.pathname === '/services'
+                        className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/services'
                           ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      <List className="w-4 h-4" />
-                      <span>See All Plugins</span>
-                    </Link>
-                  </div>
-                )}
+                          }`}
+                      >
+                        <List className="w-4 h-4" />
+                        <span>See All Plugins</span>
+                      </Link>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Access Management Dropdown - Admin Only */}
-          {isAdmin && (
-            <div ref={dropdownRef} className="hidden md:flex items-center gap-1">
-              <div className="relative">
+            {/* Access Management Dropdown - Admin Only */}
+            {isAdmin && (
+              <div ref={dropdownRef} className="hidden md:flex items-center gap-1">
+                <div className="relative">
                   <button
-                  onClick={() => setOpenDropdown(openDropdown === 'users' ? null : 'users')}
-                  className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
-                    openDropdown === 'users' || location.pathname === '/users' || location.pathname === '/groups' || location.pathname === '/roles' || location.pathname === '/admin/audit-logs'
+                    onClick={() => setOpenDropdown(openDropdown === 'users' ? null : 'users')}
+                    className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${openDropdown === 'users' || location.pathname === '/users' || location.pathname === '/groups' || location.pathname === '/roles' || location.pathname === '/admin/audit-logs'
                       ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                       : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                  }`}
-                >
-                  <Users className="w-4 h-4" />
-                  <span>Access Management</span>
-                  <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${openDropdown === 'users' ? 'rotate-180' : ''}`} />
-                </button>
+                      }`}
+                  >
+                    <Users className="w-4 h-4" />
+                    <span>Access Management</span>
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${openDropdown === 'users' ? 'rotate-180' : ''}`} />
+                  </button>
 
-                {openDropdown === 'users' && (
-                  <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-lg py-2 border border-gray-200 dark:border-gray-800 ring-1 ring-black ring-opacity-5 z-50 animate-in fade-in zoom-in-95 duration-150 origin-top-left">
-                    <Link
-                      to="/users"
-                      onClick={() => setOpenDropdown(null)}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                        location.pathname === '/users'
+                  {openDropdown === 'users' && (
+                    <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-lg py-2 border border-gray-200 dark:border-gray-800 ring-1 ring-black ring-opacity-5 z-50 animate-in fade-in zoom-in-95 duration-150 origin-top-left">
+                      <Link
+                        to="/users"
+                        onClick={() => setOpenDropdown(null)}
+                        className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/users'
                           ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      <Users className="w-4 h-4" />
-                      <span>Users</span>
-                    </Link>
-                    <Link
-                      to="/groups"
-                      onClick={() => setOpenDropdown(null)}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                        location.pathname === '/groups'
+                          }`}
+                      >
+                        <Users className="w-4 h-4" />
+                        <span>Users</span>
+                      </Link>
+                      <Link
+                        to="/groups"
+                        onClick={() => setOpenDropdown(null)}
+                        className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/groups'
                           ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      <Users className="w-4 h-4" />
-                      <span>Groups</span>
-                    </Link>
-                    <Link
-                      to="/roles"
-                      onClick={() => setOpenDropdown(null)}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                        location.pathname === '/roles'
+                          }`}
+                      >
+                        <Users className="w-4 h-4" />
+                        <span>Groups</span>
+                      </Link>
+                      <Link
+                        to="/roles"
+                        onClick={() => setOpenDropdown(null)}
+                        className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/roles'
                           ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      <Shield className="w-4 h-4" />
-                      <span>Roles</span>
-                    </Link>
-                    <Link
-                      to="/admin/audit-logs"
-                      onClick={() => setOpenDropdown(null)}
-                      className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                        location.pathname === '/admin/audit-logs'
+                          }`}
+                      >
+                        <Shield className="w-4 h-4" />
+                        <span>Roles</span>
+                      </Link>
+                      <Link
+                        to="/admin/audit-logs"
+                        onClick={() => setOpenDropdown(null)}
+                        className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${location.pathname === '/admin/audit-logs'
                           ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
                           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      <FileText className="w-4 h-4" />
-                      <span>Audit Logs</span>
-                    </Link>
-                  </div>
-                )}
+                          }`}
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span>Audit Logs</span>
+                      </Link>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
             )}
           </div>
 
@@ -370,7 +366,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 </div>
                 {user?.avatar_url && user.avatar_url.trim() !== '' && !user.avatar_url.includes('data:;base64,=') && !avatarError ? (
                   <img
-                    src={user.avatar_url.startsWith('http') ? user.avatar_url : `${API_URL}${user.avatar_url}`}
+                    src={user.avatar_url.startsWith('http') || user.avatar_url.startsWith('data:') ? user.avatar_url : `${API_URL}${user.avatar_url}`}
                     alt="Profile"
                     className="h-8 w-8 rounded-full ring-2 ring-gray-200 dark:ring-gray-800 object-cover"
                     onError={() => {

@@ -188,7 +188,7 @@ export const AdminDashboard: React.FC = () => {
                         </button>
 
                         <button
-                            onClick={() => navigate('/all-deployments')}
+                            onClick={() => navigate('/deployments')}
                             className="flex items-center justify-between p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl hover:border-orange-500 dark:hover:border-orange-500 transition-colors group text-left"
                         >
                             <div className="flex items-center gap-4">
@@ -209,27 +209,28 @@ export const AdminDashboard: React.FC = () => {
                 <div className="bg-white dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-800 shadow-sm">
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-6">Role Distribution</h3>
                     <div className="space-y-4">
-                        {stats?.role_distribution.map((item, index) => {
-                            const percentage = Math.round((item.count / (stats.total_users || 1)) * 100);
-                            return (
-                                <div key={item.role}>
-                                    <div className="flex justify-between text-sm mb-1">
-                                        <span className="font-medium text-gray-700 dark:text-gray-300 capitalize">{item.role}</span>
-                                        <span className="text-gray-500 dark:text-gray-400">{item.count} users ({percentage}%)</span>
+                        {(stats?.role_distribution && Array.isArray(stats.role_distribution) && stats.role_distribution.length > 0) ? (
+                            stats.role_distribution.map((item, index) => {
+                                const percentage = Math.round((item.count / (stats?.total_users || 1)) * 100);
+                                return (
+                                    <div key={item.role || index}>
+                                        <div className="flex justify-between text-sm mb-1">
+                                            <span className="font-medium text-gray-700 dark:text-gray-300 capitalize">{item.role || 'Unknown'}</span>
+                                            <span className="text-gray-500 dark:text-gray-400">{item.count || 0} users ({percentage}%)</span>
+                                        </div>
+                                        <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2">
+                                            <div
+                                                className={`h-2 rounded-full ${index % 3 === 0 ? 'bg-orange-600' :
+                                                    index % 3 === 1 ? 'bg-orange-600' : 'bg-blue-600'
+                                                    }`}
+                                                style={{ width: `${percentage}%` }}
+                                            ></div>
+                                        </div>
                                     </div>
-                                    <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2">
-                                        <div
-                                            className={`h-2 rounded-full ${index % 3 === 0 ? 'bg-orange-600' :
-                                                index % 3 === 1 ? 'bg-orange-600' : 'bg-blue-600'
-                                                }`}
-                                            style={{ width: `${percentage}%` }}
-                                        ></div>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                        {(!stats?.role_distribution || stats.role_distribution.length === 0) && (
-                            <p className="text-sm text-gray-500 text-center py-4">No data available</p>
+                                );
+                            })
+                        ) : (
+                            <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-4">No data available</p>
                         )}
                     </div>
                 </div>

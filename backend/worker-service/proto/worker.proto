@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package worker;
+
+// Worker Service
+service WorkerService {
+  // Infrastructure Provisioning
+  rpc ProvisionInfrastructure(ProvisionInfrastructureRequest) returns (TaskResponse);
+  rpc DestroyInfrastructure(DestroyInfrastructureRequest) returns (TaskResponse);
+  
+  // Microservice Provisioning
+  rpc ProvisionMicroservice(ProvisionMicroserviceRequest) returns (TaskResponse);
+  rpc DestroyMicroservice(DestroyMicroserviceRequest) returns (TaskResponse);
+  
+  // Cleanup Tasks
+  rpc CleanupStuckDeployments(Empty) returns (TaskResponse);
+  rpc CleanupExpiredRefreshTokens(Empty) returns (TaskResponse);
+  rpc PollGitHubActionsStatus(Empty) returns (TaskResponse);
+  
+  // GitHub Webhooks
+  rpc ProcessGitHubWebhook(ProcessGitHubWebhookRequest) returns (ProcessGitHubWebhookResponse);
+  
+  // Task Status
+  rpc GetTaskStatus(GetTaskStatusRequest) returns (TaskStatusResponse);
+}
+
+// Common Messages
+message Empty {}
+
+// Infrastructure Provisioning
+message ProvisionInfrastructureRequest {
+  string job_id = 1;
+  string plugin_id = 2;
+  string version = 3;
+  string inputs = 4;  // JSON string
+  string credential_name = 5;
+  string deployment_id = 6;
+}
+
+message DestroyInfrastructureRequest {
+  string deployment_id = 1;
+}
+
+// Microservice Provisioning
+message ProvisionMicroserviceRequest {
+  string job_id = 1;
+  string plugin_id = 2;
+  string version = 3;
+  string deployment_name = 4;
+  string user_id = 5;
+  string deployment_id = 6;
+  string inputs = 7;  // JSON string
+}
+
+message DestroyMicroserviceRequest {
+  string deployment_id = 1;
+}
+
+// Task Responses
+message TaskResponse {
+  bool success = 1;
+  string message = 2;
+  string task_id = 3;  // For async tasks
+  string error = 4;
+}
+
+message GetTaskStatusRequest {
+  string task_id = 1;
+}
+
+message TaskStatusResponse {
+  string status = 1;  // pending, running, success, failed
+  string message = 2;
+  string error = 3;
+  string outputs = 4;  // JSON string
+}
+
+// GitHub Webhook Processing
+message ProcessGitHubWebhookRequest {
+  string event_type = 1;  // e.g., "workflow_run"
+  string payload = 2;  // JSON string of webhook payload
+  string signature = 3;  // X-Hub-Signature-256 header value
+  bytes payload_body = 4;  // Raw payload body for signature verification
+}
+
+message ProcessGitHubWebhookResponse {
+  bool success = 1;
+  string message = 2;
+  bool deployment_updated = 3;  // Whether a deployment was found and updated
+  string deployment_id = 4;  // ID of updated deployment (if any)
+}

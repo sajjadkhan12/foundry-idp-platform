@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-    Zap, 
+import {
+    Zap,
     Shield
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -71,7 +71,7 @@ export const DashboardPage: React.FC = () => {
         if (isLoadingBusinessUnits || isLoadingActiveBusinessUnit) {
             return;
         }
-        
+
         // Check if business unit is selected (admins can bypass)
         const userIsAdmin = isAdmin;
         if (!userIsAdmin && (!activeBusinessUnit || !hasBusinessUnitAccess)) {
@@ -79,17 +79,21 @@ export const DashboardPage: React.FC = () => {
             setLoading(false);
             return;
         }
-        
+
         try {
             setLoading(true);
             setError('');
 
             // Fetch all data in parallel (with error handling)
+            const commonParams = {
+                business_unit_id: activeBusinessUnit?.id || undefined
+            };
+
             const [deploymentsData, pluginsData, notificationsData, envStatsData] = await Promise.all([
-                api.listDeployments({ limit: 100 }).catch(() => ({ items: [], total: 0 })),
+                api.listDeployments({ ...commonParams, limit: 100 }).catch(() => ({ items: [], total: 0 })),
                 api.pluginsApi.listPlugins().catch(() => []),
                 api.notificationsApi.getNotifications(false).catch(() => ({ items: [], total: 0 })),
-                api.request('/api/v1/deployments/stats/by-environment').catch(() => [])
+                api.request(`/api/v1/deployments/stats/by-environment${activeBusinessUnit?.id ? `?business_unit_id=${activeBusinessUnit.id}` : ''}`).catch(() => [])
             ]);
 
             // Process deployments
@@ -97,7 +101,7 @@ export const DashboardPage: React.FC = () => {
             const activeDeployments = deployments.filter((d: any) => d.status === 'active').length;
             const failedDeployments = deployments.filter((d: any) => d.status === 'failed').length;
             const provisioningDeployments = deployments.filter((d: any) => d.status === 'provisioning').length;
-            
+
             // Get recent deployments (last 5)
             const recent = deployments
                 .slice(0, 5)
@@ -179,15 +183,15 @@ export const DashboardPage: React.FC = () => {
                     </p>
                 </div>
                 <div className="flex gap-2">
-                    <Link 
-                        to="/provision" 
+                    <Link
+                        to="/provision"
                         className="bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-500 transition-colors shadow-lg shadow-orange-500/20 flex items-center gap-2"
                     >
                         <Zap className="w-4 h-4" /> Quick Deploy
                     </Link>
                     {isAdmin && (
-                        <Link 
-                            to="/admin-dashboard" 
+                        <Link
+                            to="/admin-dashboard"
                             className="bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center gap-2"
                         >
                             <Shield className="w-4 h-4" /> Admin
@@ -198,6 +202,15 @@ export const DashboardPage: React.FC = () => {
 
             {/* Stats Grid */}
             <StatsGrid stats={stats} />
+
+            {/* Environment Breakdown - Moved above Recent Deployments for normal users */}
+            <EnvironmentBreakdown
+                envStats={stats.envStats}
+                isAdmin={isAdmin}
+                activeBusinessUnit={activeBusinessUnit}
+                hasBusinessUnitAccess={hasBusinessUnitAccess}
+                onBusinessUnitWarning={() => setShowBusinessUnitWarning(true)}
+            />
 
             {/* Main Content Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -214,20 +227,13 @@ export const DashboardPage: React.FC = () => {
                 <QuickActions isAdmin={isAdmin} />
             </div>
 
-            {/* Recent Notifications */}
-            <NotificationsList
-                notifications={recentNotifications}
-                unreadCount={stats.unreadNotifications}
-            />
-
-            {/* Environment Breakdown */}
-            <EnvironmentBreakdown
-                envStats={stats.envStats}
-                isAdmin={isAdmin}
-                activeBusinessUnit={activeBusinessUnit}
-                hasBusinessUnitAccess={hasBusinessUnitAccess}
-                onBusinessUnitWarning={() => setShowBusinessUnitWarning(true)}
-            />
+            {/* Recent Notifications - Only for Admins */}
+            {isAdmin && (
+                <NotificationsList
+                    notifications={recentNotifications}
+                    unreadCount={stats.unreadNotifications}
+                />
+            )}
 
             {/* Business Unit Warning Modal */}
             <BusinessUnitWarningModal

@@ -286,20 +286,20 @@ export const AuditLogsPage: React.FC = () => {
                                 </thead>
                                 <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                                     {auditLogs.map((log) => {
-                                        const status = log.details?.status || 'success';
+                                        const status = log.status || 'success';
                                         return (
                                             <tr key={log.id} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
                                                 <td className="px-4 xl:px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                                                     {formatDate(log.created_at)}
                                                 </td>
                                                 <td className="px-4 xl:px-6 py-4 whitespace-nowrap">
-                                                    {log.user ? (
+                                                    {(log.user || log.user_email || log.user_name) ? (
                                                         <div>
                                                             <div className="text-sm font-medium text-gray-900 dark:text-white">
-                                                                {log.user.full_name || log.user.username}
+                                                                {log.user_name || log.user?.full_name || log.user?.username || 'User'}
                                                             </div>
                                                             <div className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[200px]">
-                                                                {log.user.email}
+                                                                {log.user_email || log.user?.email}
                                                             </div>
                                                         </div>
                                                     ) : (
@@ -360,7 +360,7 @@ export const AuditLogsPage: React.FC = () => {
                         {/* Mobile/Tablet Card View */}
                         <div className="lg:hidden divide-y divide-gray-200 dark:divide-gray-700">
                             {auditLogs.map((log) => {
-                                const status = log.details?.status || 'success';
+                                const status = log.status || 'success';
                                 return (
                                     <div key={log.id} className="p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
                                         <div className="flex items-start justify-between mb-3">

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, ExternalLink, Trash2, Trash, Filter, X, Calendar, Clock, RotateCcw } from 'lucide-react';
+import { Search, ExternalLink, Trash2, Trash, Filter, X, Calendar, Clock, RotateCcw, ChevronDown, Building2 } from 'lucide-react';
 import api from '../services/api';
 import { appLogger } from '../utils/logger';
 import { getStatusColor, getStatusIcon } from '../utils/jobStatus';
@@ -20,7 +20,7 @@ interface Job {
 
 export const AdminJobs: React.FC = () => {
     const navigate = useNavigate();
-    const { activeBusinessUnit, isSwitchingBusinessUnit } = useAuth();
+    const { activeBusinessUnit, isSwitchingBusinessUnit, businessUnits, isAdmin } = useAuth();
     const [jobs, setJobs] = useState<Job[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
@@ -39,6 +39,11 @@ export const AdminJobs: React.FC = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const [itemsPerPage, setItemsPerPage] = useState(50);
     const [totalItems, setTotalItems] = useState(0);
+    const [selectedBusinessUnitFilter, setSelectedBusinessUnitFilter] = useState<string | null>(null);
+    const [isBusinessUnitDropdownOpen, setIsBusinessUnitDropdownOpen] = useState(false);
+    const [businessUnitSearchQuery, setBusinessUnitSearchQuery] = useState('');
+    const businessUnitDropdownRef = useRef<HTMLDivElement>(null);
+    const businessUnitSearchInputRef = useRef<HTMLInputElement>(null);
 
     // Debounce search queries
     useEffect(() => {
@@ -55,17 +60,44 @@ export const AdminJobs: React.FC = () => {
         return () => clearTimeout(timer);
     }, [emailFilter]);
 
-    // Fetch jobs when business unit changes
+    // Close business unit dropdown when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (businessUnitDropdownRef.current && !businessUnitDropdownRef.current.contains(event.target as Node)) {
+                setIsBusinessUnitDropdownOpen(false);
+                setBusinessUnitSearchQuery(''); // Clear search when closing
+            }
+        };
+
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, []);
+
+    // Focus search input when dropdown opens
+    useEffect(() => {
+        if (isBusinessUnitDropdownOpen && businessUnitSearchInputRef.current) {
+            // Small delay to ensure the dropdown is rendered
+            setTimeout(() => {
+                businessUnitSearchInputRef.current?.focus();
+            }, 100);
+        } else {
+            setBusinessUnitSearchQuery(''); // Clear search when closing
+        }
+    }, [isBusinessUnitDropdownOpen]);
+
+    // Fetch jobs when business unit filter changes
     useEffect(() => {
         if (!isSwitchingBusinessUnit) {
-            loadJobs();
+            setCurrentPage(1);
         }
-    }, [activeBusinessUnit?.id, isSwitchingBusinessUnit]);
+    }, [selectedBusinessUnitFilter]);
 
     // Fetch jobs when filters or pagination change
     useEffect(() => {
         loadJobs();
-    }, [debouncedSearch, debouncedEmail, startDate, endDate, currentPage, itemsPerPage]);
+    }, [debouncedSearch, debouncedEmail, startDate, endDate, currentPage, itemsPerPage, selectedBusinessUnitFilter]);
 
     const loadJobs = async (skipPolling = false) => {
         // Show loading when switching business units (unless it's a polling call)
@@ -74,15 +106,18 @@ export const AdminJobs: React.FC = () => {
         }
         try {
             const skip = (currentPage - 1) * itemsPerPage;
+            // Use selectedBusinessUnitFilter if set, otherwise fall back to activeBusinessUnit
+            const businessUnitId = selectedBusinessUnitFilter || activeBusinessUnit?.id || undefined;
             const response = await api.listJobs({
                 jobId: debouncedSearch || undefined,
                 email: debouncedEmail || undefined,
                 startDate: startDate || undefined,
                 endDate: endDate || undefined,
+                businessUnitId: businessUnitId,
                 skip,
                 limit: itemsPerPage
             });
-            
+
             // Handle both old format (array) and new format (object with items/total)
             if (Array.isArray(response)) {
                 setJobs(response);
@@ -103,10 +138,11 @@ export const AdminJobs: React.FC = () => {
         setEmailFilter('');
         setStartDate('');
         setEndDate('');
+        setSelectedBusinessUnitFilter(null);
         setCurrentPage(1); // Reset to first page when clearing filters
     };
 
-    const hasActiveFilters = (searchQuery || emailFilter) || startDate || endDate;
+    const hasActiveFilters = (searchQuery || emailFilter) || startDate || endDate || selectedBusinessUnitFilter;
 
     const handlePageChange = (page: number) => {
         setCurrentPage(page);
@@ -168,21 +204,21 @@ export const AdminJobs: React.FC = () => {
         try {
             const jobIds = Array.from(selectedJobs);
             const result = await api.bulkDeleteJobs(jobIds);
-            
+
             // Remove deleted jobs from the list
             setJobs(jobs.filter(job => !selectedJobs.has(job.id)));
             setSelectedJobs(new Set());
             setBulkDeleteModalOpen(false);
-            
+
             if (result.failed_count > 0) {
-                setMessage({ 
-                    type: 'error', 
-                    text: `Deleted ${result.deleted_count} jobs. ${result.failed_count} failed.` 
+                setMessage({
+                    type: 'error',
+                    text: `Deleted ${result.deleted_count} jobs. ${result.failed_count} failed.`
                 });
             } else {
-                setMessage({ 
-                    type: 'success', 
-                    text: `Successfully deleted ${result.deleted_count} jobs` 
+                setMessage({
+                    type: 'success',
+                    text: `Successfully deleted ${result.deleted_count} jobs`
                 });
             }
             setTimeout(() => setMessage(null), 5000);
@@ -218,19 +254,154 @@ export const AdminJobs: React.FC = () => {
                                 Delete Selected ({selectedJobs.size})
                             </button>
                         )}
+
+                        {/* Business Unit Filter Dropdown */}
+                        <div ref={businessUnitDropdownRef} className="relative">
+                            <button
+                                onClick={() => setIsBusinessUnitDropdownOpen(!isBusinessUnitDropdownOpen)}
+                                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium ${selectedBusinessUnitFilter
+                                        ? 'bg-orange-600 text-white hover:bg-orange-700'
+                                        : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                                    }`}
+                            >
+                                <Building2 className="w-4 h-4" />
+                                {selectedBusinessUnitFilter
+                                    ? businessUnits.find(bu => bu.id === selectedBusinessUnitFilter)?.name || 'Business Unit'
+                                    : 'All Business Units'}
+                                <ChevronDown className={`w-4 h-4 transition-transform ${isBusinessUnitDropdownOpen ? 'rotate-180' : ''}`} />
+                            </button>
+
+                            {isBusinessUnitDropdownOpen && (
+                                <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-gray-900 rounded-xl shadow-lg border border-gray-200 dark:border-gray-800 ring-1 ring-black ring-opacity-5 z-50 animate-in fade-in zoom-in-95 duration-150 origin-top-right">
+                                    {/* Search Input */}
+                                    <div className="px-3 pt-3 pb-2 border-b border-gray-200 dark:border-gray-800">
+                                        <div className="relative">
+                                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                                            <input
+                                                ref={businessUnitSearchInputRef}
+                                                type="text"
+                                                placeholder="Search by name, slug..."
+                                                value={businessUnitSearchQuery}
+                                                onChange={(e) => setBusinessUnitSearchQuery(e.target.value)}
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                                            />
+                                            {businessUnitSearchQuery && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setBusinessUnitSearchQuery('');
+                                                        businessUnitSearchInputRef.current?.focus();
+                                                    }}
+                                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded"
+                                                >
+                                                    <X className="w-3.5 h-3.5" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Business Units List */}
+                                    <div className="py-2 max-h-80 overflow-y-auto">
+                                        {/* All Business Units Option */}
+                                        {(!businessUnitSearchQuery.trim() ||
+                                            'all business units'.includes(businessUnitSearchQuery.toLowerCase()) ||
+                                            'admin view'.includes(businessUnitSearchQuery.toLowerCase())) && (
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedBusinessUnitFilter(null);
+                                                        setIsBusinessUnitDropdownOpen(false);
+                                                        setBusinessUnitSearchQuery('');
+                                                    }}
+                                                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${!selectedBusinessUnitFilter
+                                                            ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
+                                                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                                                        }`}
+                                                >
+                                                    <div className="flex flex-col">
+                                                        <span className="font-medium">All Business Units</span>
+                                                        <span className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                                            Admin view - see all data
+                                                        </span>
+                                                    </div>
+                                                    {!selectedBusinessUnitFilter && (
+                                                        <div className="w-2 h-2 rounded-full bg-orange-500 ml-2 flex-shrink-0"></div>
+                                                    )}
+                                                </button>
+                                            )}
+
+                                        {/* Filtered Business Units */}
+                                        {businessUnits
+                                            .filter((bu) => {
+                                                if (!businessUnitSearchQuery.trim()) return true;
+                                                const query = businessUnitSearchQuery.toLowerCase();
+                                                return (
+                                                    bu.name.toLowerCase().includes(query) ||
+                                                    bu.slug.toLowerCase().includes(query) ||
+                                                    (bu.description && bu.description.toLowerCase().includes(query))
+                                                );
+                                            })
+                                            .map((bu) => (
+                                                <button
+                                                    key={bu.id}
+                                                    onClick={() => {
+                                                        setSelectedBusinessUnitFilter(bu.id);
+                                                        setIsBusinessUnitDropdownOpen(false);
+                                                        setBusinessUnitSearchQuery('');
+                                                    }}
+                                                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${selectedBusinessUnitFilter === bu.id
+                                                            ? 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400'
+                                                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                                                        }`}
+                                                >
+                                                    <div className="flex flex-col min-w-0 flex-1">
+                                                        <span className="font-medium truncate">{bu.name}</span>
+                                                        <div className="flex items-center gap-2 mt-0.5">
+                                                            <span className="text-xs text-gray-500 dark:text-gray-400">/{bu.slug}</span>
+                                                            {bu.description && (
+                                                                <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                                                    • {bu.description}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    {selectedBusinessUnitFilter === bu.id && (
+                                                        <div className="w-2 h-2 rounded-full bg-orange-500 ml-2 flex-shrink-0"></div>
+                                                    )}
+                                                </button>
+                                            ))}
+
+                                        {/* No Results Message */}
+                                        {businessUnits.filter((bu) => {
+                                            if (!businessUnitSearchQuery.trim()) return false;
+                                            const query = businessUnitSearchQuery.toLowerCase();
+                                            return (
+                                                bu.name.toLowerCase().includes(query) ||
+                                                bu.slug.toLowerCase().includes(query) ||
+                                                (bu.description && bu.description.toLowerCase().includes(query))
+                                            );
+                                        }).length === 0 && businessUnitSearchQuery.trim() && (
+                                                <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400 text-center">
+                                                    No business units found matching "{businessUnitSearchQuery}"
+                                                </div>
+                                            )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         <button
                             onClick={() => setShowFilters(!showFilters)}
-                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium ${
-                                showFilters || hasActiveFilters
-                                    ? 'bg-orange-600 text-white hover:bg-orange-700'
-                                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                            }`}
+                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium ${showFilters || hasActiveFilters
+                                ? 'bg-orange-600 text-white hover:bg-orange-700'
+                                : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                                }`}
                         >
                             <Filter className="w-4 h-4" />
                             Filters
                             {hasActiveFilters && (
                                 <span className="ml-1 px-1.5 py-0.5 bg-white/20 dark:bg-black/20 rounded text-xs">
-                                    {[searchQuery, emailFilter, startDate, endDate].filter(Boolean).length}
+                                    {[searchQuery, emailFilter, startDate, endDate, selectedBusinessUnitFilter].filter(Boolean).length}
                                 </span>
                             )}
                         </button>
@@ -320,7 +491,7 @@ export const AdminJobs: React.FC = () => {
                                         )}
                                     </div>
                                 </div>
-                                
+
                                 {/* Quick Date Presets */}
                                 <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-800">
                                     <div className="flex flex-wrap gap-2">
@@ -408,11 +579,10 @@ export const AdminJobs: React.FC = () => {
 
             {/* Message */}
             {message && (
-                <div className={`p-4 rounded-lg ${
-                    message.type === 'success' 
-                        ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-200'
-                        : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-200'
-                }`}>
+                <div className={`p-4 rounded-lg ${message.type === 'success'
+                    ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-200'
+                    : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-200'
+                    }`}>
                     {message.text}
                 </div>
             )}
@@ -541,7 +711,7 @@ export const AdminJobs: React.FC = () => {
                         </tbody>
                     </table>
                 </div>
-                
+
                 {/* Pagination */}
                 {totalItems > 0 && (
                     <Pagination

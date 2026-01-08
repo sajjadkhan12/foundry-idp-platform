@@ -38,6 +38,8 @@ export interface Deployment {
   inputs?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
   user_id?: string;
+  user_name?: string;
+  user_email?: string;
   job_id?: string;
   // Microservice fields
   github_repo_url?: string;

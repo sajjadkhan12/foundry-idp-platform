@@ -10,8 +10,7 @@ import { AdminDashboard } from './pages/AdminDashboard';
 import { ServicesPage } from './pages/Services';
 import { ServiceDetailPage } from './pages/ServiceDetail';
 import { DeploymentStatusPage } from './pages/DeploymentStatus';
-import { CatalogPage } from './pages/Catalog';
-import { AllDeploymentsPage } from './pages/AllDeployments';
+import { DeploymentsPage } from './pages/Deployments';
 import { ProfilePage } from './pages/Profile';
 import { UsersPage } from './pages/Users';
 import { GroupsPage } from './pages/Groups';
@@ -85,40 +84,39 @@ const App: React.FC = () => {
           <AppContext.Provider value={{ theme, toggleTheme, plugins, togglePlugin }}>
             <BrowserRouter>
               <Routes>
-              {/* Public Routes */}
-              <Route path="/login" element={<LoginPage />} />
+                {/* Public Routes */}
+                <Route path="/login" element={<LoginPage />} />
 
-              {/* Protected Routes */}
-              <Route path="/" element={<ProtectedRoute><Layout><DashboardPage /></Layout></ProtectedRoute>} />
-              <Route path="/services" element={<ProtectedRoute><Layout><ServicesPage /></Layout></ProtectedRoute>} />
-              <Route path="/service/:id" element={<ProtectedRoute><Layout><ServiceDetailPage /></Layout></ProtectedRoute>} />
-              <Route path="/deployment/:id" element={<ProtectedRoute><Layout><DeploymentStatusPage /></Layout></ProtectedRoute>} />
-              <Route path="/deployments" element={<ProtectedRoute><Layout><CatalogPage /></Layout></ProtectedRoute>} />
-              <Route path="/all-deployments" element={<ProtectedRoute adminOnly><Layout><AllDeploymentsPage /></Layout></ProtectedRoute>} />
-              <Route path="/costs" element={<ProtectedRoute><Layout><CostAnalysisPage /></Layout></ProtectedRoute>} />
-              <Route path="/admin-dashboard" element={<ProtectedRoute adminOnly><Layout><AdminDashboard /></Layout></ProtectedRoute>} />
-              <Route path="/settings" element={<ProtectedRoute adminOnly><Layout><SettingsPage /></Layout></ProtectedRoute>} />
-              <Route path="/users" element={<ProtectedRoute adminOnly><Layout><UsersPage /></Layout></ProtectedRoute>} />
-              <Route path="/groups" element={<ProtectedRoute adminOnly><Layout><GroupsPage /></Layout></ProtectedRoute>} />
-              <Route path="/roles" element={<ProtectedRoute adminOnly><Layout><RolesPage /></Layout></ProtectedRoute>} />
-              <Route path="/profile" element={<ProtectedRoute><Layout><ProfilePage /></Layout></ProtectedRoute>} />
-              <Route path="/plugin/:id" element={<ProtectedRoute><Layout><PluginDetailPage /></Layout></ProtectedRoute>} />
+                {/* Protected Routes */}
+                <Route path="/" element={<ProtectedRoute><Layout><DashboardPage /></Layout></ProtectedRoute>} />
+                <Route path="/services" element={<ProtectedRoute><Layout><ServicesPage /></Layout></ProtectedRoute>} />
+                <Route path="/service/:id" element={<ProtectedRoute><Layout><ServiceDetailPage /></Layout></ProtectedRoute>} />
+                <Route path="/deployment/:id" element={<ProtectedRoute><Layout><DeploymentStatusPage /></Layout></ProtectedRoute>} />
+                <Route path="/deployments" element={<ProtectedRoute><Layout><DeploymentsPage /></Layout></ProtectedRoute>} />
+                <Route path="/costs" element={<ProtectedRoute><Layout><CostAnalysisPage /></Layout></ProtectedRoute>} />
+                <Route path="/admin-dashboard" element={<ProtectedRoute adminOnly><Layout><AdminDashboard /></Layout></ProtectedRoute>} />
+                <Route path="/settings" element={<ProtectedRoute adminOnly><Layout><SettingsPage /></Layout></ProtectedRoute>} />
+                <Route path="/users" element={<ProtectedRoute adminOnly><Layout><UsersPage /></Layout></ProtectedRoute>} />
+                <Route path="/groups" element={<ProtectedRoute adminOnly><Layout><GroupsPage /></Layout></ProtectedRoute>} />
+                <Route path="/roles" element={<ProtectedRoute adminOnly><Layout><RolesPage /></Layout></ProtectedRoute>} />
+                <Route path="/profile" element={<ProtectedRoute><Layout><ProfilePage /></Layout></ProtectedRoute>} />
+                <Route path="/plugin/:id" element={<ProtectedRoute><Layout><PluginDetailPage /></Layout></ProtectedRoute>} />
 
-              {/* Plugin System Routes */}
-              <Route path="/plugin-upload" element={<ProtectedRoute><Layout><PluginUpload /></Layout></ProtectedRoute>} />
-              <Route path="/provision/:pluginId" element={<ProtectedRoute><Layout><Provision /></Layout></ProtectedRoute>} />
-              <Route path="/jobs/:jobId" element={<ProtectedRoute><Layout><JobStatus /></Layout></ProtectedRoute>} />
-              <Route path="/admin/jobs" element={<ProtectedRoute adminOnly><Layout><AdminJobs /></Layout></ProtectedRoute>} />
-              <Route path="/admin/plugin-requests" element={<ProtectedRoute><Layout><PluginRequestsPage /></Layout></ProtectedRoute>} />
-              <Route path="/admin/audit-logs" element={<ProtectedRoute adminOnly><Layout><AuditLogsPage /></Layout></ProtectedRoute>} />
-              <Route path="/admin/business-units" element={<ProtectedRoute><Layout><BusinessUnitsPage /></Layout></ProtectedRoute>} />
-              <Route path="/business-units" element={<ProtectedRoute><Layout><BusinessUnitsPage /></Layout></ProtectedRoute>} />
+                {/* Plugin System Routes */}
+                <Route path="/plugin-upload" element={<ProtectedRoute><Layout><PluginUpload /></Layout></ProtectedRoute>} />
+                <Route path="/provision/:pluginId" element={<ProtectedRoute><Layout><Provision /></Layout></ProtectedRoute>} />
+                <Route path="/jobs/:jobId" element={<ProtectedRoute><Layout><JobStatus /></Layout></ProtectedRoute>} />
+                <Route path="/admin/jobs" element={<ProtectedRoute adminOnly><Layout><AdminJobs /></Layout></ProtectedRoute>} />
+                <Route path="/admin/plugin-requests" element={<ProtectedRoute><Layout><PluginRequestsPage /></Layout></ProtectedRoute>} />
+                <Route path="/admin/audit-logs" element={<ProtectedRoute adminOnly><Layout><AuditLogsPage /></Layout></ProtectedRoute>} />
+                <Route path="/admin/business-units" element={<ProtectedRoute><Layout><BusinessUnitsPage /></Layout></ProtectedRoute>} />
+                <Route path="/business-units" element={<ProtectedRoute><Layout><BusinessUnitsPage /></Layout></ProtectedRoute>} />
 
-              {/* Redirect old welcome route to dashboard */}
-              <Route path="/welcome" element={<ProtectedRoute><Navigate to="/" replace /></ProtectedRoute>} />
+                {/* Redirect old welcome route to dashboard */}
+                <Route path="/welcome" element={<ProtectedRoute><Navigate to="/" replace /></ProtectedRoute>} />
 
-              {/* 404 Route */}
-              <Route path="*" element={<NotFoundPage />} />
+                {/* 404 Route */}
+                <Route path="*" element={<NotFoundPage />} />
               </Routes>
             </BrowserRouter>
           </AppContext.Provider>

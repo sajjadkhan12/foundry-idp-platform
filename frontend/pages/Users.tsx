@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, User as UserIcon, Lock, CheckCircle2, XCircle, Edit2, Save, Trash2, AlertCircle, Loader } from 'lucide-react';
+import { Search, User as UserIcon, Lock, CheckCircle2, XCircle, Edit2, Save, Trash2, AlertCircle, Loader2 } from 'lucide-react';
 import api from '../services/api';
 import { API_URL } from '../constants/api';
 import { appLogger } from '../utils/logger';
@@ -35,14 +35,14 @@ export const UsersPage: React.FC = () => {
     const [search, setSearch] = useState('');
     const [roleFilter, setRoleFilter] = useState('');
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
-    
+
     // Use custom hooks
     const debouncedSearch = useDebounce(search, 300);
     const pagination = usePagination(50);
     const createModal = useModal();
     const editModal = useModal<User>();
     const deleteModal = useModal<User>();
-    
+
     const [editForm, setEditForm] = useState({
         email: '',
         full_name: '',
@@ -50,6 +50,7 @@ export const UsersPage: React.FC = () => {
         is_active: true
     });
     const [createForm, setCreateForm] = useState({
+        username: '',
         email: '',
         full_name: '',
         password: ''
@@ -62,22 +63,30 @@ export const UsersPage: React.FC = () => {
     const fetchUsers = async () => {
         setLoading(true);
         try {
-            const response = await api.listUsers({ 
-                search: debouncedSearch, 
+
+            const response = await api.listUsers({
+                search: debouncedSearch,
                 role: roleFilter,
                 skip: pagination.skip,
                 limit: pagination.itemsPerPage
             });
-            
-            // Handle both old format (array) and new format (object with items/total)
+
+
+
+            // Handle both old format (array) and new format (object with users/items/total)
             if (Array.isArray(response)) {
+
                 setUsers(response);
                 pagination.setTotalItems(response.length);
             } else {
-                setUsers(response.items || []);
+                // Support both "users" and "items" keys for backward compatibility
+                const usersList = response.users || response.items || [];
+
+                setUsers(usersList);
                 pagination.setTotalItems(response.total || 0);
             }
         } catch (error) {
+            console.error('[Users Page] Failed to fetch users:', error);
             appLogger.error('Failed to fetch users:', error);
         } finally {
             setLoading(false);
@@ -88,7 +97,7 @@ export const UsersPage: React.FC = () => {
         setLoadingRoles(true);
         try {
             const response = await api.listRoles({ skip: 0, limit: 100 });
-            
+
             // Handle both old format (array) and new format (object with items/total)
             if (Array.isArray(response)) {
                 setRoles(response);
@@ -160,9 +169,9 @@ export const UsersPage: React.FC = () => {
 
     const handleCreateUser = async () => {
         setCreateError(null);
-        
-        if (!createForm.email || !createForm.password) {
-            setCreateError('Email and password are required');
+
+        if (!createForm.username || !createForm.email || !createForm.password) {
+            setCreateError('Username, email, and password are required');
             return;
         }
 
@@ -173,7 +182,7 @@ export const UsersPage: React.FC = () => {
             });
             setMessage({ type: 'success', text: 'User created successfully' });
             createModal.close();
-            setCreateForm({ email: '', full_name: '', password: '' });
+            setCreateForm({ username: '', email: '', full_name: '', password: '' });
             setCreateError(null);
 
             // Clear filters and refresh the user list
@@ -296,7 +305,7 @@ export const UsersPage: React.FC = () => {
                                             <div className="flex items-center gap-3">
                                                 {user.avatar_url && user.avatar_url.trim() !== '' && !user.avatar_url.includes('data:;base64,=') ? (
                                                     <img
-                                                        src={user.avatar_url.startsWith('http') ? user.avatar_url : `${API_URL}${user.avatar_url}`}
+                                                        src={user.avatar_url.startsWith('http') || user.avatar_url.startsWith('data:') ? user.avatar_url : `${API_URL}${user.avatar_url}`}
                                                         alt={user.username}
                                                         className="w-10 h-10 rounded-full object-cover ring-2 ring-gray-100 dark:ring-gray-800"
                                                         onError={(e) => {
@@ -320,15 +329,14 @@ export const UsersPage: React.FC = () => {
                                                     user.roles.map((roleName) => {
                                                         const roleInfo = roles.find(r => r.name === roleName);
                                                         const isPlatformRole = roleInfo?.is_platform_role === true;
-                                                        
+
                                                         return (
                                                             <span
                                                                 key={roleName}
-                                                                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                                                                    isPlatformRole
-                                                                        ? 'bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-800'
-                                                                        : 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800'
-                                                                }`}
+                                                                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${isPlatformRole
+                                                                    ? 'bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-800'
+                                                                    : 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800'
+                                                                    }`}
                                                             >
                                                                 <UserIcon className="w-3 h-3" />
                                                                 {roleName.charAt(0).toUpperCase() + roleName.slice(1).replace(/-/g, ' ')}
@@ -381,7 +389,7 @@ export const UsersPage: React.FC = () => {
                         </tbody>
                     </table>
                 </div>
-                
+
                 {/* Pagination */}
                 {pagination.totalItems > 0 && (
                     <Pagination
@@ -421,7 +429,7 @@ export const UsersPage: React.FC = () => {
                         >
                             {isCreating ? (
                                 <>
-                                    <Loader className="w-4 h-4 animate-spin" /> Creating...
+                                    <Loader2 className="w-4 h-4 animate-spin" /> Creating...
                                 </>
                             ) : (
                                 <>
@@ -447,10 +455,24 @@ export const UsersPage: React.FC = () => {
                         </button>
                     </div>
                 )}
-                
+
                 <div className="space-y-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Username <span className="text-red-500">*</span></label>
+                        <input
+                            type="text"
+                            value={createForm.username}
+                            onChange={(e) => {
+                                setCreateForm({ ...createForm, username: e.target.value });
+                                setCreateError(null);
+                            }}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="username"
+                            required
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address <span className="text-red-500">*</span></label>
                         <input
                             type="email"
                             value={createForm.email}
@@ -460,6 +482,7 @@ export const UsersPage: React.FC = () => {
                             }}
                             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-orange-500"
                             placeholder="user@example.com"
+                            required
                         />
                     </div>
                     <div>
@@ -481,9 +504,8 @@ export const UsersPage: React.FC = () => {
                                 setCreateForm({ ...createForm, password: e.target.value });
                                 setCreateError(null);
                             }}
-                            className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 ${
-                                createError ? 'border-red-300 dark:border-red-700 focus:ring-red-500' : 'border-gray-300 dark:border-gray-700 focus:ring-orange-500'
-                            }`}
+                            className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 ${createError ? 'border-red-300 dark:border-red-700 focus:ring-red-500' : 'border-gray-300 dark:border-gray-700 focus:ring-orange-500'
+                                }`}
                             placeholder="••••••••"
                         />
                         <PasswordStrength password={createForm.password} />
@@ -511,7 +533,7 @@ export const UsersPage: React.FC = () => {
                         >
                             {isSaving ? (
                                 <>
-                                    <Loader className="w-4 h-4 animate-spin" /> Saving...
+                                    <Loader2 className="w-4 h-4 animate-spin" /> Saving...
                                 </>
                             ) : (
                                 <>

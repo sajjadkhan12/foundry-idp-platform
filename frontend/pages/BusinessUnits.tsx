@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Edit2, Trash2, Users, Building2, X, Save, Mail, UserPlus, UserMinus, AlertCircle, Loader, Shield } from 'lucide-react';
+import { Search, Plus, Edit2, Trash2, Users, Building2, X, Save, Mail, UserPlus, UserMinus, AlertCircle, Loader2, Shield } from 'lucide-react';
 import { businessUnitsApi, BusinessUnit, BusinessUnitMember, BusinessUnitCreate, BusinessUnitUpdate, BusinessUnitMemberAdd } from '../services/api/businessUnits';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -19,7 +19,7 @@ export const BusinessUnitsPage: React.FC = () => {
     const [members, setMembers] = useState<BusinessUnitMember[]>([]);
     const [loadingMembers, setLoadingMembers] = useState(false);
     const [allUsers, setAllUsers] = useState<any[]>([]);
-    
+
     const [createForm, setCreateForm] = useState<BusinessUnitCreate>({
         name: '',
         slug: '',
@@ -41,10 +41,10 @@ export const BusinessUnitsPage: React.FC = () => {
     const [userSearchQuery, setUserSearchQuery] = useState('');
     const [showUserDropdown, setShowUserDropdown] = useState(false);
     const [selectedUser, setSelectedUser] = useState<any | null>(null);
-    const [selectedMemberForRoles, setSelectedMemberForRoles] = useState<{email: string, userId: string, currentRoles: BusinessUnitMember[]} | null>(null);
-    const [pendingRoleChanges, setPendingRoleChanges] = useState<{toAdd: Set<string>, toRemove: Set<string>}>({toAdd: new Set(), toRemove: new Set()});
-    const [memberRoleChanges, setMemberRoleChanges] = useState<Map<string, {toAdd: Set<string>, toRemove: Set<string>}>>(new Map());
-    const [pendingMemberChanges, setPendingMemberChanges] = useState<{toAdd: Set<string>, toRemove: Set<string>}>({toAdd: new Set(), toRemove: new Set()});
+    const [selectedMemberForRoles, setSelectedMemberForRoles] = useState<{ email: string, userId: string, currentRoles: BusinessUnitMember[] } | null>(null);
+    const [pendingRoleChanges, setPendingRoleChanges] = useState<{ toAdd: Set<string>, toRemove: Set<string> }>({ toAdd: new Set(), toRemove: new Set() });
+    const [memberRoleChanges, setMemberRoleChanges] = useState<Map<string, { toAdd: Set<string>, toRemove: Set<string> }>>(new Map());
+    const [pendingMemberChanges, setPendingMemberChanges] = useState<{ toAdd: Set<string>, toRemove: Set<string> }>({ toAdd: new Set(), toRemove: new Set() });
     const [roleSearchQuery, setRoleSearchQuery] = useState('');
     const userSearchRef = useRef<HTMLDivElement>(null);
 
@@ -215,7 +215,7 @@ export const BusinessUnitsPage: React.FC = () => {
         setMemberRoleChanges(prev => {
             const newMap = new Map(prev);
             const memberChanges = newMap.get(userEmail) || { toAdd: new Set<string>(), toRemove: new Set<string>() };
-            
+
             if (memberChanges.toRemove.has(roleId)) {
                 memberChanges.toRemove.delete(roleId);
             } else {
@@ -225,7 +225,7 @@ export const BusinessUnitsPage: React.FC = () => {
                     memberChanges.toAdd.add(roleId);
                 }
             }
-            
+
             newMap.set(userEmail, memberChanges);
             return newMap;
         });
@@ -235,13 +235,13 @@ export const BusinessUnitsPage: React.FC = () => {
         setMemberRoleChanges(prev => {
             const newMap = new Map(prev);
             const memberChanges = newMap.get(userEmail) || { toAdd: new Set<string>(), toRemove: new Set<string>() };
-            
+
             if (memberChanges.toAdd.has(roleId)) {
                 memberChanges.toAdd.delete(roleId);
             } else {
                 memberChanges.toRemove.add(roleId);
             }
-            
+
             newMap.set(userEmail, memberChanges);
             return newMap;
         });
@@ -265,7 +265,7 @@ export const BusinessUnitsPage: React.FC = () => {
                 const userMembers = membersByUser.get(userEmail) || [];
                 const currentRoleCount = userMembers.length;
                 const willHaveRoles = currentRoleCount - changes.toRemove.size + changes.toAdd.size;
-                
+
                 if (willHaveRoles === 0) {
                     addNotification('error', `Cannot remove all roles from ${userEmail}. A member must have at least one role.`);
                     return;
@@ -382,7 +382,7 @@ export const BusinessUnitsPage: React.FC = () => {
 
     const handleManageRoles = (email: string, userId: string, currentRoles: BusinessUnitMember[]) => {
         // Filter out memberships without roles (role_id is null/undefined)
-        const rolesWithActualRoles = currentRoles.filter(m => m.role_id != null);
+        const rolesWithActualRoles = currentRoles.filter(m => m.role_id && m.role_id !== '');
         setSelectedMemberForRoles({ email, userId, currentRoles: rolesWithActualRoles });
         // Initialize pending changes
         setPendingRoleChanges({ toAdd: new Set(), toRemove: new Set() });
@@ -392,7 +392,7 @@ export const BusinessUnitsPage: React.FC = () => {
         setPendingRoleChanges(prev => {
             const newToAdd = new Set(prev.toAdd);
             const newToRemove = new Set(prev.toRemove);
-            
+
             // If it was marked for removal, unmark it
             if (newToRemove.has(roleId)) {
                 newToRemove.delete(roleId);
@@ -403,7 +403,7 @@ export const BusinessUnitsPage: React.FC = () => {
                 }
                 newToAdd.add(roleId);
             }
-            
+
             return { toAdd: newToAdd, toRemove: newToRemove };
         });
     };
@@ -412,14 +412,14 @@ export const BusinessUnitsPage: React.FC = () => {
         setPendingRoleChanges(prev => {
             const newToAdd = new Set(prev.toAdd);
             const newToRemove = new Set(prev.toRemove);
-            
+
             // If it was marked for addition, unmark it
             if (newToAdd.has(roleId)) {
                 newToAdd.delete(roleId);
             } else {
                 newToRemove.add(roleId);
             }
-            
+
             return { toAdd: newToAdd, toRemove: newToRemove };
         });
     };
@@ -430,9 +430,9 @@ export const BusinessUnitsPage: React.FC = () => {
         try {
             // Check if removing last role without adding a new one
             // Only count memberships with actual roles (filter out NULL role_id)
-            const currentRoleCount = selectedMemberForRoles.currentRoles.filter(m => m.role_id != null).length;
+            const currentRoleCount = selectedMemberForRoles.currentRoles.filter(m => m.role_id && m.role_id !== '').length;
             const willHaveRoles = currentRoleCount - pendingRoleChanges.toRemove.size + pendingRoleChanges.toAdd.size;
-            
+
             if (willHaveRoles === 0) {
                 addNotification('error', 'Cannot remove all roles. A member must have at least one role. Please add a role first or remove the member entirely from the Business Unit.');
                 return;
@@ -505,63 +505,76 @@ export const BusinessUnitsPage: React.FC = () => {
     if (loading) {
         return (
             <div className="flex items-center justify-center min-h-[400px]">
-                <Loader className="w-8 h-8 animate-spin text-orange-600" />
+                <Loader2 className="w-8 h-8 animate-spin text-orange-600" />
             </div>
         );
     }
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
+            {/* Header section with Glassmorphism */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Business Units</h1>
-                    <p className="text-gray-500 dark:text-gray-400 mt-1">Manage business units and their members</p>
+                    <h1 className="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-gray-900 to-gray-600 dark:from-white dark:to-gray-400 tracking-tight">
+                        Business Units
+                    </h1>
+                    <p className="text-gray-500 dark:text-gray-400 mt-2 font-medium">
+                        Manage business units and their members
+                    </p>
                 </div>
                 {isAdmin && (
-                    <button
-                        onClick={() => setShowCreateModal(true)}
-                        className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors font-medium"
-                    >
-                        <Plus className="w-5 h-5" />
-                        Create Business Unit
-                    </button>
+                    <div className="relative group">
+                        <div className="absolute -inset-0.5 bg-gradient-to-r from-orange-600 to-orange-400 rounded-xl blur opacity-30 group-hover:opacity-100 transition duration-500"></div>
+                        <button
+                            onClick={() => setShowCreateModal(true)}
+                            className="relative flex items-center gap-2 px-6 py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-xl font-bold transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                            <Plus className="w-5 h-5" />
+                            Create Business Unit
+                        </button>
+                    </div>
                 )}
             </div>
 
-            {/* Search */}
-            <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input
-                    type="text"
-                    placeholder="Search business units..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
-                />
+            {/* Search Bar with Glassmorphism */}
+            <div className="relative group">
+                <div className="absolute -inset-0.5 bg-gradient-to-r from-gray-200 to-gray-100 dark:from-gray-800 dark:to-gray-900 rounded-2xl blur-sm opacity-50"></div>
+                <div className="relative bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border border-gray-200 dark:border-gray-800 rounded-2xl p-4 shadow-xl transition-all duration-500">
+                    <div className="relative group/search">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within/search:text-orange-500 transition-colors w-5 h-5" />
+                        <input
+                            type="text"
+                            placeholder="Search business units..."
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="w-full pl-12 pr-4 py-3.5 bg-gray-50/50 dark:bg-gray-800/50 border-2 border-transparent focus:border-orange-500/20 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none transition-all duration-300"
+                        />
+                    </div>
+                </div>
             </div>
 
-            {/* Business Units List */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Business Units Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredBusinessUnits.map((bu) => (
                     <div
                         key={bu.id}
-                        className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 hover:border-orange-500 dark:hover:border-orange-500 transition-colors"
+                        className="group relative bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border border-gray-200 dark:border-gray-800 rounded-3xl p-6 hover:border-orange-500/50 hover:shadow-2xl hover:shadow-orange-500/10 transition-all duration-500"
                     >
                         <div className="flex items-start justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-orange-100 dark:bg-orange-900/20 rounded-lg">
-                                    <Building2 className="w-6 h-6 text-orange-600 dark:text-orange-400" />
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-orange-500/20 group-hover:scale-110 transition-transform duration-500">
+                                    <Building2 className="w-7 h-7 text-white" />
                                 </div>
-                                <div>
-                                    <h3 className="font-semibold text-gray-900 dark:text-white">{bu.name}</h3>
-                                    <p className="text-sm text-gray-500 dark:text-gray-400">/{bu.slug}</p>
+                                <div className="min-w-0">
+                                    <h3 className="text-lg font-black text-gray-900 dark:text-white truncate group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors">{bu.name}</h3>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 font-bold truncate">/{bu.slug}</p>
                                 </div>
                             </div>
                             {(bu.can_manage_members === true || isAdmin) && (
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-shrink-0">
                                     <button
                                         onClick={() => handleEdit(bu)}
-                                        className="p-1.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
+                                        className="p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
                                         title="Edit Business Unit"
                                     >
                                         <Edit2 className="w-4 h-4" />
@@ -569,7 +582,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                     {isAdmin && (
                                         <button
                                             onClick={() => handleDelete(bu)}
-                                            className="p-1.5 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+                                            className="p-2 text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
                                             title="Delete Business Unit"
                                         >
                                             <Trash2 className="w-4 h-4" />
@@ -579,28 +592,34 @@ export const BusinessUnitsPage: React.FC = () => {
                             )}
                         </div>
                         {bu.description && (
-                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">{bu.description}</p>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 line-clamp-2">{bu.description}</p>
                         )}
-                        <div className="space-y-2 pt-4 border-t border-gray-100 dark:border-gray-800">
+                        <div className="space-y-3 pt-4 border-t border-gray-100 dark:border-gray-800">
                             <div className="flex items-center justify-between">
-                                <span className="text-sm text-gray-500 dark:text-gray-400">{bu.member_count || 0} {bu.member_count === 1 ? 'member' : 'members'}</span>
+                                <div className="flex items-center gap-2">
+                                    <Users className="w-4 h-4 text-gray-400" />
+                                    <span className="text-sm font-bold text-gray-500 dark:text-gray-400">{bu.member_count || 0} {bu.member_count === 1 ? 'member' : 'members'}</span>
+                                </div>
                                 {(bu.can_manage_members === true || isAdmin) && (
                                     <button
                                         onClick={() => handleViewMembers(bu)}
-                                        className="text-sm font-medium text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300"
+                                        className="text-xs font-bold text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 transition-colors px-3 py-1.5 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-900/20"
                                     >
-                                        Manage Members
+                                        Manage
                                     </button>
                                 )}
                             </div>
                             <div className="flex items-center justify-between">
-                                <span className="text-sm text-gray-500 dark:text-gray-400">Roles</span>
+                                <div className="flex items-center gap-2">
+                                    <Shield className="w-4 h-4 text-gray-400" />
+                                    <span className="text-sm font-bold text-gray-500 dark:text-gray-400">Roles</span>
+                                </div>
                                 {(bu.can_manage_members === true || isAdmin) && (
                                     <button
                                         onClick={() => handleViewRoles(bu)}
-                                        className="text-sm font-medium text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300"
+                                        className="text-xs font-bold text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 transition-colors px-3 py-1.5 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-900/20"
                                     >
-                                        Manage Roles
+                                        Manage
                                     </button>
                                 )}
                             </div>
@@ -610,58 +629,61 @@ export const BusinessUnitsPage: React.FC = () => {
             </div>
 
             {filteredBusinessUnits.length === 0 && (
-                <div className="text-center py-12">
-                    <Building2 className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                    <p className="text-gray-500 dark:text-gray-400">No business units found</p>
+                <div className="bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-3xl p-16 text-center animate-in fade-in zoom-in-95 duration-700">
+                    <div className="w-20 h-20 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                        <Building2 className="w-10 h-10 text-gray-400" />
+                    </div>
+                    <h3 className="text-2xl font-black text-gray-900 dark:text-white mb-2">No business units found</h3>
+                    <p className="text-gray-500 dark:text-gray-400 font-medium">Try adjusting your search or create a new business unit.</p>
                 </div>
             )}
 
             {/* Create Modal */}
             {showCreateModal && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
-                    <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 sm:p-6 max-w-md w-full border border-gray-200 dark:border-gray-800 my-4">
-                        <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Create Business Unit</h2>
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto animate-in fade-in duration-300">
+                    <div className="bg-white/95 dark:bg-gray-900/95 backdrop-blur-2xl rounded-3xl p-6 max-w-md w-full border border-gray-200 dark:border-gray-800 shadow-2xl my-4 animate-in zoom-in-95 duration-300">
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-2xl font-black text-gray-900 dark:text-white">Create Business Unit</h2>
                             <button
                                 onClick={() => setShowCreateModal(false)}
-                                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+                                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors"
                             >
                                 <X className="w-5 h-5" />
                             </button>
                         </div>
-                        <div className="space-y-4">
+                        <div className="space-y-5">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Name *
+                                <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                                    Name <span className="text-orange-500">*</span>
                                 </label>
                                 <input
                                     type="text"
                                     value={createForm.name}
                                     onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                                    placeholder="e.g., it-operations"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all outline-none"
+                                    placeholder="e.g., IT Operations"
                                 />
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    Slug *
+                                <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                                    Slug <span className="text-orange-500">*</span>
                                 </label>
                                 <input
                                     type="text"
                                     value={createForm.slug}
                                     onChange={(e) => setCreateForm({ ...createForm, slug: e.target.value.toLowerCase().replace(/\s+/g, '-') })}
-                                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all outline-none font-mono"
                                     placeholder="e.g., it-operations"
                                 />
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
                                     Description
                                 </label>
                                 <textarea
                                     value={createForm.description}
                                     onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
-                                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all outline-none"
                                     rows={3}
                                     placeholder="Optional description"
                                 />
@@ -669,13 +691,13 @@ export const BusinessUnitsPage: React.FC = () => {
                             <div className="flex gap-3 pt-4">
                                 <button
                                     onClick={() => setShowCreateModal(false)}
-                                    className="flex-1 px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                                    className="flex-1 px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all font-bold"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     onClick={handleCreate}
-                                    className="flex-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors font-medium"
+                                    className="flex-1 px-4 py-3 bg-orange-600 hover:bg-orange-700 text-white rounded-xl transition-all font-bold shadow-lg shadow-orange-500/20"
                                 >
                                     Create
                                 </button>
@@ -687,50 +709,50 @@ export const BusinessUnitsPage: React.FC = () => {
 
             {/* Edit Modal */}
             {showEditModal && selectedBusinessUnit && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
-                    <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 sm:p-6 max-w-md w-full border border-gray-200 dark:border-gray-800 my-4">
-                        <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Edit Business Unit</h2>
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto animate-in fade-in duration-300">
+                    <div className="bg-white/95 dark:bg-gray-900/95 backdrop-blur-2xl rounded-3xl p-6 max-w-md w-full border border-gray-200 dark:border-gray-800 shadow-2xl my-4 animate-in zoom-in-95 duration-300">
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-2xl font-black text-gray-900 dark:text-white">Edit Business Unit</h2>
                             <button
                                 onClick={() => setShowEditModal(false)}
-                                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+                                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors"
                             >
                                 <X className="w-5 h-5" />
                             </button>
                         </div>
-                        <div className="space-y-4">
+                        <div className="space-y-5">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
                                     Name
                                 </label>
                                 <input
                                     type="text"
                                     value={editForm.name}
                                     onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all outline-none"
                                 />
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
                                     Description
                                 </label>
                                 <textarea
                                     value={editForm.description}
                                     onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all outline-none"
                                     rows={3}
                                 />
                             </div>
                             <div className="flex gap-3 pt-4">
                                 <button
                                     onClick={() => setShowEditModal(false)}
-                                    className="flex-1 px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                                    className="flex-1 px-4 py-3 border-2 border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all font-bold"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     onClick={handleUpdate}
-                                    className="flex-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors font-medium"
+                                    className="flex-1 px-4 py-3 bg-orange-600 hover:bg-orange-700 text-white rounded-xl transition-all font-bold shadow-lg shadow-orange-500/20"
                                 >
                                     Save
                                 </button>
@@ -788,18 +810,18 @@ export const BusinessUnitsPage: React.FC = () => {
                                 <div className="space-y-2" ref={userSearchRef}>
                                     {loadingMembers ? (
                                         <div className="flex items-center justify-center py-8 text-gray-500">
-                                            <Loader className="w-6 h-6 animate-spin text-orange-600" />
+                                            <Loader2 className="w-6 h-6 animate-spin text-orange-600" />
                                         </div>
                                     ) : (() => {
                                         // Get member emails to filter them out (excluding pending removals)
                                         const memberEmails = new Set(members.map(m => m.user_email));
-                                        const availableUsersList = allUsers.filter(user => 
+                                        const availableUsersList = allUsers.filter(user =>
                                             (!memberEmails.has(user.email) || pendingMemberChanges.toRemove.has(user.email)) &&
                                             !pendingMemberChanges.toAdd.has(user.email) &&
-                                            (userSearchQuery === '' || 
-                                             user.email.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
-                                             (user.full_name || '').toLowerCase().includes(userSearchQuery.toLowerCase()) ||
-                                             (user.username || '').toLowerCase().includes(userSearchQuery.toLowerCase()))
+                                            (userSearchQuery === '' ||
+                                                user.email.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+                                                (user.full_name || '').toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+                                                (user.username || '').toLowerCase().includes(userSearchQuery.toLowerCase()))
                                         );
 
                                         return availableUsersList.length === 0 ? (
@@ -812,11 +834,10 @@ export const BusinessUnitsPage: React.FC = () => {
                                                 return (
                                                     <div
                                                         key={user.id}
-                                                        className={`flex items-center justify-between p-3 rounded-lg border ${
-                                                            isPendingAdd
-                                                                ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-900/30'
-                                                                : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700'
-                                                        }`}
+                                                        className={`flex items-center justify-between p-3 rounded-lg border ${isPendingAdd
+                                                            ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-900/30'
+                                                            : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700'
+                                                            }`}
                                                     >
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-center gap-2">
@@ -831,11 +852,10 @@ export const BusinessUnitsPage: React.FC = () => {
                                                         </div>
                                                         <button
                                                             onClick={() => handleStageAddMember(user.email)}
-                                                            className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ml-2 ${
-                                                                isPendingAdd
-                                                                    ? 'text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20'
-                                                                    : 'text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20'
-                                                            }`}
+                                                            className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ml-2 ${isPendingAdd
+                                                                ? 'text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20'
+                                                                : 'text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20'
+                                                                }`}
                                                             title={isPendingAdd ? 'Cancel adding user' : 'Add user to business unit'}
                                                         >
                                                             {isPendingAdd ? <X className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
@@ -854,7 +874,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                 <div className="space-y-2">
                                     {loadingMembers ? (
                                         <div className="flex items-center justify-center py-8 text-gray-500">
-                                            <Loader className="w-6 h-6 animate-spin text-orange-600" />
+                                            <Loader2 className="w-6 h-6 animate-spin text-orange-600" />
                                         </div>
                                     ) : (() => {
                                         // Group members by user_email to show all roles for each user
@@ -876,7 +896,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                                     .map(([email, userMembers]) => {
                                                         const matchingBU = businessUnits.find(bu => bu.id === selectedBusinessUnit.id);
                                                         const canManage = isAdmin || (matchingBU && matchingBU.can_manage_members === true);
-                                                        
+
                                                         return (
                                                             <div
                                                                 key={email}
@@ -889,16 +909,16 @@ export const BusinessUnitsPage: React.FC = () => {
                                                                         </p>
                                                                         <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{email}</p>
                                                                         <div className="flex flex-wrap items-center gap-2 mt-2">
-                                                                            {userMembers.filter(m => m.role_id != null).map((member) => (
+                                                                            {userMembers.filter(m => m.role_id && m.role_id !== '').map((member) => (
                                                                                 <div key={member.id} className="flex items-center gap-1.5">
                                                                                     <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded capitalize">
-                                                                                        {member.role ? member.role.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'Unknown'}
+                                                                                        {member.role.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                                                                                     </span>
                                                                                 </div>
                                                                             ))}
-                                                                            {userMembers.filter(m => m.role_id != null).length === 0 && (
+                                                                            {userMembers.filter(m => m.role_id && m.role_id !== '').length === 0 && (
                                                                                 <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded">
-                                                                                    No roles
+                                                                                    No Role
                                                                                 </span>
                                                                             )}
                                                                         </div>
@@ -925,7 +945,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                                             </div>
                                                         );
                                                     })}
-                                                
+
                                                 {/* Pending Removals */}
                                                 {memberEntries
                                                     .filter(([email]) => pendingMemberChanges.toRemove.has(email))
@@ -951,7 +971,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                                             </div>
                                                         </div>
                                                     ))}
-                                                
+
                                                 {/* Pending Additions */}
                                                 {Array.from(pendingMemberChanges.toAdd).map(userEmail => {
                                                     const user = allUsers.find(u => u.email === userEmail);
@@ -982,7 +1002,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                                         </div>
                                                     );
                                                 })}
-                                                
+
                                                 {memberEntries.length === 0 && pendingMemberChanges.toAdd.size === 0 && (
                                                     <p className="text-sm text-gray-500 text-center py-4">No members yet</p>
                                                 )}
@@ -1020,11 +1040,10 @@ export const BusinessUnitsPage: React.FC = () => {
                                 <button
                                     onClick={handleSaveMembers}
                                     disabled={pendingMemberChanges.toAdd.size === 0 && pendingMemberChanges.toRemove.size === 0}
-                                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm flex items-center gap-2 ${
-                                        pendingMemberChanges.toAdd.size === 0 && pendingMemberChanges.toRemove.size === 0
-                                            ? 'bg-gray-400 cursor-not-allowed'
-                                            : 'bg-orange-600 hover:bg-orange-700 shadow-orange-500/20'
-                                    }`}
+                                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm flex items-center gap-2 ${pendingMemberChanges.toAdd.size === 0 && pendingMemberChanges.toRemove.size === 0
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-orange-600 hover:bg-orange-700 shadow-orange-500/20'
+                                        }`}
                                 >
                                     <Save className="w-4 h-4" /> Save Changes
                                 </button>
@@ -1096,8 +1115,8 @@ export const BusinessUnitsPage: React.FC = () => {
                                         const isPendingRemove = pendingRoleChanges.toRemove.has(role.id);
                                         return role.is_platform_role === false && (!hasRole && !isPendingAdd) || isPendingRemove;
                                     }).length === 0 && (
-                                        <p className="text-sm text-gray-500 text-center py-8">No available roles</p>
-                                    )}
+                                            <p className="text-sm text-gray-500 text-center py-8">No available roles</p>
+                                        )}
                                 </div>
                             </div>
 
@@ -1105,17 +1124,16 @@ export const BusinessUnitsPage: React.FC = () => {
                             <div className="flex-1 p-4 overflow-y-auto">
                                 <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Current Roles</h4>
                                 <div className="space-y-2">
-                                    {selectedMemberForRoles.currentRoles.filter(m => m.role_id != null).map(member => {
+                                    {selectedMemberForRoles.currentRoles.filter(m => m.role_id && m.role_id !== '').map(member => {
                                         const role = availableRoles.find(r => r.id === member.role_id);
                                         const isPendingRemove = pendingRoleChanges.toRemove.has(member.role_id!);
                                         return (
                                             <div
                                                 key={member.id}
-                                                className={`flex items-center justify-between p-3 rounded-lg border ${
-                                                    isPendingRemove
-                                                        ? 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30 opacity-60'
-                                                        : 'bg-orange-50 dark:bg-orange-900/10 border-orange-100 dark:border-orange-900/30'
-                                                }`}
+                                                className={`flex items-center justify-between p-3 rounded-lg border ${isPendingRemove
+                                                    ? 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30 opacity-60'
+                                                    : 'bg-orange-50 dark:bg-orange-900/10 border-orange-100 dark:border-orange-900/30'
+                                                    }`}
                                             >
                                                 <div className="flex items-center gap-3">
                                                     <div className="p-1.5 bg-orange-50 dark:bg-orange-900/20 rounded-lg">
@@ -1175,7 +1193,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                         );
                                     })}
 
-                                    {selectedMemberForRoles.currentRoles.filter(m => m.role_id != null).length === 0 && pendingRoleChanges.toAdd.size === 0 && (
+                                    {selectedMemberForRoles.currentRoles.filter(m => m.role_id && m.role_id !== '').length === 0 && pendingRoleChanges.toAdd.size === 0 && (
                                         <p className="text-sm text-gray-500 text-center py-4">No roles assigned</p>
                                     )}
                                 </div>
@@ -1205,11 +1223,10 @@ export const BusinessUnitsPage: React.FC = () => {
                                 <button
                                     onClick={handleSaveRoleChanges}
                                     disabled={pendingRoleChanges.toAdd.size === 0 && pendingRoleChanges.toRemove.size === 0}
-                                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm flex items-center gap-2 ${
-                                        pendingRoleChanges.toAdd.size === 0 && pendingRoleChanges.toRemove.size === 0
-                                            ? 'bg-gray-400 cursor-not-allowed'
-                                            : 'bg-orange-600 hover:bg-orange-700 shadow-orange-500/20'
-                                    }`}
+                                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm flex items-center gap-2 ${pendingRoleChanges.toAdd.size === 0 && pendingRoleChanges.toRemove.size === 0
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-orange-600 hover:bg-orange-700 shadow-orange-500/20'
+                                        }`}
                                 >
                                     <Save className="w-4 h-4" /> Save Changes
                                 </button>
@@ -1259,7 +1276,7 @@ export const BusinessUnitsPage: React.FC = () => {
                         <div className="flex-1 overflow-auto px-6 pb-4">
                             {loadingMembers ? (
                                 <div className="flex items-center justify-center py-12 text-gray-500">
-                                    <Loader className="w-6 h-6 animate-spin text-orange-600" />
+                                    <Loader2 className="w-6 h-6 animate-spin text-orange-600" />
                                 </div>
                             ) : (() => {
                                 // Group members by user_email
@@ -1275,7 +1292,7 @@ export const BusinessUnitsPage: React.FC = () => {
                                 let memberEntries = Array.from(membersByUser.entries());
                                 if (roleSearchQuery) {
                                     const query = roleSearchQuery.toLowerCase();
-                                    memberEntries = memberEntries.filter(([email, userMembers]) => 
+                                    memberEntries = memberEntries.filter(([email, userMembers]) =>
                                         email.toLowerCase().includes(query) ||
                                         (userMembers[0].user_name || '').toLowerCase().includes(query)
                                     );
@@ -1306,13 +1323,12 @@ export const BusinessUnitsPage: React.FC = () => {
                                                 {memberEntries.map(([email, userMembers]) => {
                                                     const memberChanges = memberRoleChanges.get(email) || { toAdd: new Set<string>(), toRemove: new Set<string>() };
                                                     const hasChanges = memberChanges.toAdd.size > 0 || memberChanges.toRemove.size > 0;
-                                                    
+
                                                     return (
                                                         <tr
                                                             key={email}
-                                                            className={`border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 ${
-                                                                hasChanges ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''
-                                                            }`}
+                                                            className={`border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 ${hasChanges ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''
+                                                                }`}
                                                         >
                                                             <td className="py-3 px-4">
                                                                 <div>
@@ -1324,18 +1340,17 @@ export const BusinessUnitsPage: React.FC = () => {
                                                             </td>
                                                             <td className="py-3 px-4">
                                                                 <div className="flex flex-wrap gap-1.5">
-                                                                    {/* Current Roles - filter out NULL-role memberships */}
-                                                                    {userMembers.filter(m => m.role_id != null).map((member) => {
+                                                                    {/* Current Roles - filter out empty role memberships */}
+                                                                    {userMembers.filter(m => m.role_id && m.role_id !== '').map((member) => {
                                                                         const role = availableRoles.find(r => r.id === member.role_id);
                                                                         const isPendingRemove = memberChanges.toRemove.has(member.role_id!);
                                                                         return (
                                                                             <span
                                                                                 key={member.id}
-                                                                                className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
-                                                                                    isPendingRemove
-                                                                                        ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 line-through opacity-60'
-                                                                                        : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
-                                                                                }`}
+                                                                                className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${isPendingRemove
+                                                                                    ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 line-through opacity-60'
+                                                                                    : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+                                                                                    }`}
                                                                             >
                                                                                 <Shield className="w-3 h-3" />
                                                                                 {role ? (role.name.charAt(0).toUpperCase() + role.name.slice(1).replace(/-/g, ' ')) : member.role}
@@ -1441,11 +1456,10 @@ export const BusinessUnitsPage: React.FC = () => {
                                 <button
                                     onClick={handleSaveAllRoleChanges}
                                     disabled={Array.from(memberRoleChanges.values()).every(changes => changes.toAdd.size === 0 && changes.toRemove.size === 0)}
-                                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm flex items-center gap-2 ${
-                                        Array.from(memberRoleChanges.values()).every(changes => changes.toAdd.size === 0 && changes.toRemove.size === 0)
-                                            ? 'bg-gray-400 cursor-not-allowed'
-                                            : 'bg-orange-600 hover:bg-orange-700 shadow-orange-500/20'
-                                    }`}
+                                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-sm flex items-center gap-2 ${Array.from(memberRoleChanges.values()).every(changes => changes.toAdd.size === 0 && changes.toRemove.size === 0)
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-orange-600 hover:bg-orange-700 shadow-orange-500/20'
+                                        }`}
                                 >
                                     <Save className="w-4 h-4" /> Save Changes
                                 </button>

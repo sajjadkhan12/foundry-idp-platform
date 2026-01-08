@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+package deployment;
+
+// Deployment Service
+service DeploymentService {
+  // CRUD Operations
+  rpc CreateDeployment(CreateDeploymentRequest) returns (DeploymentResponse);
+  rpc GetDeployment(GetDeploymentRequest) returns (DeploymentResponse);
+  rpc UpdateDeployment(UpdateDeploymentRequest) returns (DeploymentResponse);
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (Empty);
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  
+  // Deployment History
+  rpc GetDeploymentHistory(GetDeploymentHistoryRequest) returns (ListDeploymentHistoryResponse);
+  rpc GetDeploymentHistoryVersion(GetDeploymentHistoryVersionRequest) returns (DeploymentHistoryResponse);
+  
+  // Tags
+  rpc AddDeploymentTag(AddDeploymentTagRequest) returns (Empty);
+  rpc RemoveDeploymentTag(RemoveDeploymentTagRequest) returns (Empty);
+  rpc ListDeploymentTags(ListDeploymentTagsRequest) returns (ListDeploymentTagsResponse);
+  
+  // CI/CD Status
+  rpc UpdateCICDStatus(UpdateCICDStatusRequest) returns (Empty);
+  rpc GetCICDStatus(GetCICDStatusRequest) returns (CICDStatusResponse);
+  
+  // Statistics
+  rpc GetDeploymentStats(GetDeploymentStatsRequest) returns (DeploymentStatsResponse);
+  
+  // Cost Tracking
+  rpc GetDeploymentCosts(GetDeploymentCostsRequest) returns (DeploymentCostsResponse);
+}
+
+// Common Messages
+message Empty {}
+
+// Deployment Messages
+message CreateDeploymentRequest {
+  string name = 1;
+  string deployment_type = 2;  // infrastructure, microservice
+  string plugin_id = 3;
+  string version = 4;
+  string environment = 5;  // development, staging, production
+  string user_id = 6;
+  string business_unit_id = 7;  // Optional
+  string inputs = 8;  // JSON string
+  string cost_center = 9;  // Optional
+  string project_code = 10;  // Optional
+}
+
+message UpdateDeploymentRequest {
+  string deployment_id = 1;
+  string name = 2;  // Optional
+  string environment = 3;  // Optional
+  string inputs = 4;  // Optional, JSON string
+  string cost_center = 5;  // Optional
+  string project_code = 6;  // Optional
+  string status = 7;  // Optional
+  string user_id = 8;
+}
+
+message GetDeploymentRequest {
+  string deployment_id = 1;
+  bool include_tags = 2;
+  bool include_history = 3;
+}
+
+message DeleteDeploymentRequest {
+  string deployment_id = 1;
+  string user_email = 2;  // User email for deletion tracking
+}
+
+message DeleteDeploymentResponse {
+  string message = 1;
+  string task_id = 2;  // Worker task ID
+  string job_id = 3;  // Deletion job ID
+  string deployment_id = 4;
+  string status = 5;  // accepted, etc.
+}
+
+message ListDeploymentsRequest {
+  string search = 1;  // Optional
+  string status = 2;  // Optional
+  string cloud_provider = 3;  // Optional
+  string plugin_id = 4;  // Optional
+  string environment = 5;  // Optional
+  string tags = 6;  // Optional, format: "key1:value1,key2:value2"
+  string user_id = 7;  // Optional, for admin filtering
+  string business_unit_id = 8;  // Optional
+  int32 skip = 9;
+  int32 limit = 10;
+}
+
+message DeploymentResponse {
+  string id = 1;
+  string name = 2;
+  string status = 3;
+  string deployment_type = 4;
+  string environment = 5;
+  string plugin_id = 6;
+  string version = 7;
+  string stack_name = 8;
+  string cloud_provider = 9;
+  string region = 10;
+  string git_branch = 11;
+  string github_repo_url = 12;
+  string github_repo_name = 13;
+  string ci_cd_status = 14;
+  int64 ci_cd_run_id = 15;
+  string ci_cd_run_url = 16;
+  string ci_cd_updated_at = 17;
+  string update_status = 18;
+  string last_update_job_id = 19;
+  string last_update_error = 20;
+  string last_update_attempted_at = 21;
+  string inputs = 22;  // JSON string
+  string outputs = 23;  // JSON string
+  string user_id = 24;
+  string business_unit_id = 25;
+  string cost_center = 26;
+  string project_code = 27;
+  string created_at = 28;
+  string updated_at = 29;
+  repeated DeploymentTagResponse tags = 30;
+}
+
+message ListDeploymentsResponse {
+  repeated DeploymentResponse deployments = 1;
+  int32 total = 2;
+  int32 skip = 3;
+  int32 limit = 4;
+}
+
+// Deployment History Messages
+message GetDeploymentHistoryRequest {
+  string deployment_id = 1;
+  int32 skip = 2;
+  int32 limit = 3;
+}
+
+message GetDeploymentHistoryVersionRequest {
+  string deployment_id = 1;
+  int64 version_number = 2;
+}
+
+message DeploymentHistoryResponse {
+  string id = 1;
+  string deployment_id = 2;
+  int64 version_number = 3;
+  string inputs = 4;  // JSON string
+  string outputs = 5;  // JSON string
+  string status = 6;
+  string job_id = 7;
+  string created_at = 8;
+  string created_by = 9;
+  string description = 10;
+}
+
+message ListDeploymentHistoryResponse {
+  repeated DeploymentHistoryResponse history = 1;
+  int32 total = 2;
+}
+
+// Tag Messages
+message AddDeploymentTagRequest {
+  string deployment_id = 1;
+  string key = 2;
+  string value = 3;
+}
+
+message RemoveDeploymentTagRequest {
+  string deployment_id = 1;
+  string key = 2;
+}
+
+message ListDeploymentTagsRequest {
+  string deployment_id = 1;
+}
+
+message DeploymentTagResponse {
+  string id = 1;
+  string deployment_id = 2;
+  string key = 3;
+  string value = 4;
+  string created_at = 5;
+}
+
+message ListDeploymentTagsResponse {
+  repeated DeploymentTagResponse tags = 1;
+}
+
+// CI/CD Messages
+message UpdateCICDStatusRequest {
+  string deployment_id = 1;
+  string ci_cd_status = 2;  // pending, running, success, failed, cancelled
+  int64 ci_cd_run_id = 3;  // Optional
+  string ci_cd_run_url = 4;  // Optional
+}
+
+message GetCICDStatusRequest {
+  string deployment_id = 1;
+}
+
+message CICDStatusResponse {
+  string ci_cd_status = 1;
+  int64 ci_cd_run_id = 2;
+  string ci_cd_run_url = 3;
+  string ci_cd_updated_at = 4;
+}
+
+// Statistics Messages
+message GetDeploymentStatsRequest {
+  string business_unit_id = 1;  // Optional
+  string user_id = 2;  // Optional
+}
+
+message DeploymentStatsResponse {
+  int32 total = 1;
+  int32 active = 2;
+  int32 provisioning = 3;
+  int32 failed = 4;
+  string by_environment = 5;  // JSON string: {"development": 10, "staging": 5, "production": 3}
+  string by_cloud_provider = 6;  // JSON string: {"aws": 10, "gcp": 5, "azure": 2}
+}
+
+// Cost Messages
+message GetDeploymentCostsRequest {
+  string deployment_id = 1;  // Optional, if not provided returns all costs
+  string business_unit_id = 2;  // Optional
+  string start_date = 3;  // Optional, ISO format
+  string end_date = 4;  // Optional, ISO format
+}
+
+message DeploymentCostsResponse {
+  string total_cost = 1;  // Decimal as string
+  string currency = 2;
+  repeated DeploymentCostItem costs = 3;
+}
+
+message DeploymentCostItem {
+  string deployment_id = 1;
+  string deployment_name = 2;
+  string cost = 3;  // Decimal as string
+  string period = 4;  // e.g., "2024-01"
+}

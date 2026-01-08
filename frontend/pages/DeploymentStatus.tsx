@@ -39,6 +39,23 @@ export const DeploymentStatusPage: React.FC = () => {
     const [isRollingBack, setIsRollingBack] = useState(false);
     const [showConfigModal, setShowConfigModal] = useState(false);
     const [selectedConfig, setSelectedConfig] = useState<{ inputs: Record<string, any>; version: number } | null>(null);
+    const [businessUnitName, setBusinessUnitName] = useState<string | null>(null);
+    const [forceUpdating, setForceUpdating] = useState(false); // local flag to show updating badge immediately
+    
+    // Helper function to format created_by (handles both email and UUID)
+    const formatCreatedBy = (createdBy: string | undefined): string => {
+        if (!createdBy) return 'Unknown';
+        // If it looks like a UUID, try to show it more nicely or return as-is
+        // For emails, show as-is (they're already user-friendly)
+        if (createdBy.includes('@')) {
+            return createdBy; // It's an email
+        }
+        // If it's a UUID, we can't resolve it without a lookup, so show a shortened version
+        if (createdBy.length > 20 && createdBy.includes('-')) {
+            return createdBy.split('-')[0] + '...'; // Show first part of UUID
+        }
+        return createdBy;
+    };
 
     useEffect(() => {
         if (id) {
@@ -140,11 +157,17 @@ export const DeploymentStatusPage: React.FC = () => {
         }
     };
     
-    // Auto-poll when deployment is provisioning (separate from retry polling)
+    // Auto-poll when deployment is provisioning, deleting, or updating (separate from retry polling)
     useEffect(() => {
-        // Poll for updates when status is provisioning or deleting
-        if (!deployment || (deployment.status !== 'provisioning' && deployment.status !== 'deleting') || isRetrying) {
-            // Clear auto-polling if status is not provisioning/deleting or if retry is active
+        // Poll for updates when status is provisioning, deleting, or when update_status is updating
+        const shouldPoll = deployment && (
+            deployment.status === 'provisioning' || 
+            deployment.status === 'deleting' || 
+            deployment.update_status === 'updating'
+        );
+        
+        if (!shouldPoll || isRetrying) {
+            // Clear auto-polling if not in a state that needs polling or if retry is active
             if (autoPollInterval) {
                 clearInterval(autoPollInterval);
                 setAutoPollInterval(null);
@@ -152,14 +175,28 @@ export const DeploymentStatusPage: React.FC = () => {
             return;
         }
         
-        // Start polling every 2 seconds for provisioning/deleting deployments
+        // Start polling every 2 seconds for provisioning/deleting/updating deployments
         const interval = setInterval(async () => {
             try {
                 const updated = await api.getDeployment(deployment.id);
                 setDeployment(updated);
                 
-                // Stop polling if deployment is no longer provisioning or deleting
-                if (updated.status !== 'provisioning' && updated.status !== 'deleting') {
+                // Keep local updating flag in sync with backend
+                if (updated.update_status === 'updating') {
+                    setForceUpdating(true);
+                } else {
+                    setForceUpdating(false);
+                }
+                
+                // Also refresh history when update completes
+                if (updated.update_status === 'update_succeeded' || updated.update_status === 'update_failed') {
+                    fetchDeploymentHistory();
+                }
+                
+                // Stop polling if deployment is no longer in a state that needs polling
+                if (updated.status !== 'provisioning' && 
+                    updated.status !== 'deleting' && 
+                    updated.update_status !== 'updating') {
                     clearInterval(interval);
                     setAutoPollInterval(null);
                 }
@@ -175,7 +212,7 @@ export const DeploymentStatusPage: React.FC = () => {
         return () => {
             clearInterval(interval);
         };
-    }, [deployment?.id, deployment?.status, isRetrying]);
+    }, [deployment?.id, deployment?.status, deployment?.update_status, isRetrying]);
     
     // Cleanup all polling intervals on unmount
     useEffect(() => {
@@ -193,6 +230,27 @@ export const DeploymentStatusPage: React.FC = () => {
         try {
             const data = await api.getDeployment(id!);
             setDeployment(data);
+            
+            // Resolve business unit label (prefer slug, then name, then tag, then id)
+            let buLabel: string | null = null;
+            const buTag = data.tags?.find(tag => tag && tag.key === 'business_unit');
+            if (data.business_unit_id) {
+                try {
+                    const bu = await api.businessUnitsApi.getBusinessUnit(data.business_unit_id);
+                    buLabel = bu.slug || bu.name || null;
+                } catch (buErr: any) {
+                    // Ignore 404s (BU might be deleted); only log unexpected errors
+                    if (buErr?.status !== 404 && buErr?.response?.status !== 404) {
+                        appLogger.warn('Failed to fetch business unit name:', buErr);
+                    }
+                }
+            }
+            if (!buLabel && buTag && buTag.value) {
+                buLabel = String(buTag.value);
+            } else if (!buLabel && data.business_unit_id) {
+                buLabel = data.business_unit_id;
+            }
+            setBusinessUnitName(buLabel);
         } catch (err: any) {
             setError(err.message || 'Failed to load deployment');
         } finally {
@@ -266,6 +324,11 @@ export const DeploymentStatusPage: React.FC = () => {
                 try {
                     const updated = await api.getDeployment(deployment.id);
                     setDeployment(updated);
+                    if (updated.update_status === 'updating') {
+                        setForceUpdating(true);
+                    } else {
+                        setForceUpdating(false);
+                    }
                     
                     // Stop polling if deployment is no longer provisioning
                     if (updated.status !== 'provisioning' && updated.status !== 'failed' && updated.status !== 'deleting') {
@@ -303,6 +366,9 @@ export const DeploymentStatusPage: React.FC = () => {
         if (!deployment) return;
         
         setIsUpdating(true);
+        // Optimistically show updating badge immediately
+        setForceUpdating(true);
+        setDeployment(prev => prev ? { ...prev, update_status: 'updating' } as Deployment : prev);
         try {
             await api.deploymentsApi.updateDeployment(deployment.id, {
                 inputs: updateInputs
@@ -314,12 +380,20 @@ export const DeploymentStatusPage: React.FC = () => {
             // Refresh deployment to show updating status
             const updated = await api.getDeployment(deployment.id);
             setDeployment(updated);
+            if (updated.update_status !== 'updating') {
+                setForceUpdating(false);
+            }
             
             // Poll for update completion
             const interval = setInterval(async () => {
                 try {
                     const updated = await api.getDeployment(deployment.id);
                     setDeployment(updated);
+                    if (updated.update_status === 'updating') {
+                        setForceUpdating(true);
+                    } else {
+                        setForceUpdating(false);
+                    }
                     
                     // Stop polling if update is complete (succeeded or failed)
                     if (updated.update_status === 'update_succeeded' || updated.update_status === 'update_failed') {
@@ -338,6 +412,7 @@ export const DeploymentStatusPage: React.FC = () => {
             // Clean up polling after 5 minutes max
             setTimeout(() => {
                 clearInterval(interval);
+                setForceUpdating(false);
             }, 5 * 60 * 1000);
             
         } catch (err: any) {
@@ -472,7 +547,10 @@ export const DeploymentStatusPage: React.FC = () => {
                                 </div>
                                 {/* Status Badge in top corner */}
                                 <div className="flex items-center gap-2">
-                                    <StatusBadge status={deployment.status} size="lg" />
+                                    <StatusBadge 
+                                        status={deployment.update_status === 'updating' ? 'updating' : deployment.status} 
+                                        size="lg" 
+                                    />
                                     {deployment.update_status === 'update_failed' && (
                                         <div className="relative group">
                                             <AlertCircle className="w-5 h-5 text-yellow-500" />
@@ -482,9 +560,6 @@ export const DeploymentStatusPage: React.FC = () => {
                                                 </div>
                                             )}
                                         </div>
-                                    )}
-                                    {deployment.update_status === 'updating' && (
-                                        <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
                                     )}
                                     {deployment.update_status === 'update_succeeded' && (
                                         <Check className="w-5 h-5 text-green-500" />
@@ -506,31 +581,50 @@ export const DeploymentStatusPage: React.FC = () => {
                                 {deployment.stack_name && (
                                     <span className="text-gray-500 dark:text-gray-500 font-mono text-xs">{deployment.stack_name}</span>
                                 )}
-                                {deployment.job_id && (
+                                {/* Always show job ID if available - prefer last_update_job_id, then job_id */}
+                                {(deployment.last_update_job_id || deployment.job_id) ? (
                                     <>
                                         <span className="text-gray-400 dark:text-gray-500">•</span>
                                         <span className="text-gray-500 dark:text-gray-500 font-mono text-xs">
-                                            Job ID: {deployment.job_id}
+                                            Job ID: {deployment.last_update_job_id || deployment.job_id}
                                         </span>
                                     </>
-                                )}
+                                ) : null}
                             </div>
                             
                             {/* Tags Section */}
-                            {deployment.tags && deployment.tags.length > 0 && (
-                                <div className="flex flex-wrap gap-2 mb-4">
-                                    {deployment.tags.map((tag, idx) => (
-                                        <span
-                                            key={idx}
-                                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 text-xs"
-                                        >
-                                            <Tag className="w-3 h-3" />
-                                            <span className="font-medium">{tag.key}:</span>
-                                            <span>{tag.value}</span>
-                                        </span>
-                                    ))}
-                                </div>
-                            )}
+                            {(() => {
+                                // Build tag list and ensure business_unit shows the resolved label
+                                const allTags = [...(deployment.tags || [])];
+                                const hasBusinessUnitTag = allTags.some(tag => tag?.key === 'business_unit');
+                                if (businessUnitName) {
+                                    if (hasBusinessUnitTag) {
+                                        // Replace existing business_unit tag value with resolved label
+                                        allTags.forEach(tag => {
+                                            if (tag && tag.key === 'business_unit') {
+                                                tag.value = businessUnitName;
+                                            }
+                                        });
+                                    } else {
+                                        allTags.push({ key: 'business_unit', value: businessUnitName });
+                                    }
+                                }
+                                
+                                return allTags.length > 0 ? (
+                                    <div className="flex flex-wrap gap-2 mb-4">
+                                        {allTags.filter(tag => tag && tag.key).map((tag, idx) => (
+                                            <span
+                                                key={idx}
+                                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700 text-xs"
+                                            >
+                                                <Tag className="w-3 h-3" />
+                                                <span className="font-medium">{tag.key}:</span>
+                                                <span>{tag.value}</span>
+                                            </span>
+                                        ))}
+                                    </div>
+                                ) : null;
+                            })()}
                         </div>
                     </div>
                     
@@ -608,108 +702,93 @@ export const DeploymentStatusPage: React.FC = () => {
                                 <p className="text-sm">No deployment history available</p>
                             </div>
                         ) : (
-                            <div className="max-h-[400px] overflow-y-auto pr-2">
-                                {/* Show active deployment first */}
-                                {deploymentHistory.length > 0 && deploymentHistory[0] && deployment.status === 'active' && (
-                                    <div className="mb-4 pb-4 border-b border-gray-200 dark:border-gray-800">
-                                        {(() => {
-                                            const activeEntry = deploymentHistory[0];
-                                            const timeAgo = activeEntry.created_at ? getTimeAgo(new Date(activeEntry.created_at)) : '';
-                                            return (
-                                                <div className="border-l-2 border-green-500 pl-4">
-                                                    <div className="flex items-start justify-between gap-3 mb-2">
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="flex items-center gap-2 mb-2">
-                                                                <span className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                                    v{activeEntry.version_number}
-                                                                </span>
-                                                                <StatusBadge status="active" size="sm" />
-                                                            </div>
-                                                            {activeEntry.created_by && (
-                                                                <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                                                    Deployed by: <span className="font-medium">{activeEntry.created_by}</span>
-                                                                </p>
-                                                            )}
-                                                            {timeAgo && (
-                                                                <p className="text-xs text-gray-500 dark:text-gray-500">
-                                                                    {timeAgo}
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                    {activeEntry.inputs && Object.keys(activeEntry.inputs).length > 0 && (
-                                                        <button
-                                                            onClick={() => {
-                                                                setSelectedConfig({ inputs: activeEntry.inputs, version: activeEntry.version_number });
-                                                                setShowConfigModal(true);
-                                                            }}
-                                                            className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 font-medium flex items-center gap-1 transition-colors"
-                                                        >
-                                                            View Config <span className="text-orange-600 dark:text-orange-400">→</span>
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            );
-                                        })()}
-                                    </div>
-                                )}
-                                
-                                {/* Show all other versions in scrollable area */}
-                                {deploymentHistory.length > 1 && (
-                                    <div className="space-y-4">
-                                        {deploymentHistory.slice(1).map((entry) => {
-                                            const timeAgo = entry.created_at ? getTimeAgo(new Date(entry.created_at)) : '';
-                                            
-                                            return (
-                                                <div
-                                                    key={entry.id}
-                                                    className="border-l-2 border-gray-300 dark:border-gray-600 pl-4 pb-4"
-                                                >
-                                                    <div className="flex items-start justify-between gap-3 mb-2">
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="flex items-center gap-2 mb-2">
-                                                                <span className="text-sm font-semibold text-gray-900 dark:text-white">
-                                                                    v{entry.version_number}
-                                                                </span>
-                                                                <StatusBadge status="stopped" size="sm" />
-                                                            </div>
-                                                            {entry.created_by && (
-                                                                <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                                                    Deployed by: <span className="font-medium">{entry.created_by}</span>
-                                                                </p>
-                                                            )}
-                                                            {timeAgo && (
-                                                                <p className="text-xs text-gray-500 dark:text-gray-500">
-                                                                    {timeAgo}
-                                                                </p>
+                            <div 
+                                className="overflow-y-auto space-y-4"
+                                style={{ 
+                                    height: '180px',
+                                    scrollbarWidth: 'none', /* Firefox */
+                                    msOverflowStyle: 'none', /* IE and Edge */
+                                }}
+                            >
+                                <style>{`
+                                    div[style*="scrollbarWidth"]::-webkit-scrollbar {
+                                        display: none; /* Chrome, Safari, Opera */
+                                    }
+                                `}</style>
+                                {(() => {
+                                    // Sort history by version_number descending (v2 first, then v1)
+                                    const sortedHistory = [...deploymentHistory]
+                                        .filter(entry => entry && entry.id)
+                                        .sort((a, b) => (b.version_number || 0) - (a.version_number || 0));
+                                    
+                                    // Only the latest version (first in sorted list) should be active
+                                    const latestVersionNumber = sortedHistory.length > 0 ? sortedHistory[0].version_number : null;
+                                    
+                                    return sortedHistory.map((entry) => {
+                                        // Only mark as active if it's the latest version AND deployment is active
+                                        const isActive = entry.version_number === latestVersionNumber && 
+                                                         deployment.status === 'active';
+                                        const isUpdating = entry.version_number === latestVersionNumber && 
+                                                          deployment.update_status === 'updating';
+                                        const timeAgo = entry.created_at ? getTimeAgo(new Date(entry.created_at)) : '';
+                                        // Determine status: failed > updating (only latest) > active (only latest) > stopped
+                                        // Handle 'superseded' status from backend as 'stopped'
+                                        const entryStatus = entry.status === 'failed' ? 'failed' : 
+                                                          (isUpdating ? 'updating' : 
+                                                          (isActive ? 'active' : 'stopped'));
+                                        
+                                        return (
+                                            <div
+                                                key={entry.id}
+                                                className={`border-l-2 pl-4 pb-4 ${isActive ? 'border-green-500' : 'border-gray-300 dark:border-gray-600'}`}
+                                            >
+                                                <div className="flex items-start justify-between gap-3 mb-2">
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center gap-2 mb-2">
+                                                            <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                                v{entry.version_number}
+                                                            </span>
+                                                            <StatusBadge status={entryStatus} size="sm" />
+                                                            {entry.status === 'failed' && (
+                                                                <AlertCircle className="w-4 h-4 text-yellow-500" />
                                                             )}
                                                         </div>
+                                                        {entry.created_by && (
+                                                            <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                                                Deployed by: <span className="font-medium">{formatCreatedBy(entry.created_by)}</span>
+                                                            </p>
+                                                        )}
+                                                        {timeAgo && (
+                                                            <p className="text-xs text-gray-500 dark:text-gray-500">
+                                                                {timeAgo}
+                                                            </p>
+                                                        )}
                                                     </div>
-                                                    {entry.inputs && Object.keys(entry.inputs).length > 0 && (
-                                                        <button
-                                                            onClick={() => {
-                                                                setSelectedConfig({ inputs: entry.inputs, version: entry.version_number });
-                                                                setShowConfigModal(true);
-                                                            }}
-                                                            className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 font-medium flex items-center gap-1 transition-colors"
-                                                        >
-                                                            View Config <span className="text-orange-600 dark:text-orange-400">→</span>
-                                                        </button>
-                                                    )}
-                                                    {deployment.status === 'active' && deployment.deployment_type === 'infrastructure' && (
-                                                        <button
-                                                            onClick={() => handleRollback(entry.version_number)}
-                                                            disabled={isRollingBack || deployment.update_status === 'updating'}
-                                                            className="mt-2 text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        >
-                                                            Rollback
-                                                        </button>
-                                                    )}
                                                 </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
+                                                {entry.inputs && Object.keys(entry.inputs).length > 0 && (
+                                                    <button
+                                                        onClick={() => {
+                                                            setSelectedConfig({ inputs: entry.inputs, version: entry.version_number });
+                                                            setShowConfigModal(true);
+                                                        }}
+                                                        className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 font-medium flex items-center gap-1 transition-colors"
+                                                    >
+                                                        View Config <span className="text-orange-600 dark:text-orange-400">→</span>
+                                                    </button>
+                                                )}
+                                                {deployment.status === 'active' && deployment.deployment_type === 'infrastructure' && !isActive && (
+                                                    <button
+                                                        onClick={() => handleRollback(entry.version_number)}
+                                                        disabled={isRollingBack || deployment.update_status === 'updating'}
+                                                        className="mt-2 text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    >
+                                                        Rollback
+                                                    </button>
+                                                )}
+                                            </div>
+                                        );
+                                    });
+                                })()}
                             </div>
                         )}
                     </div>
@@ -837,14 +916,14 @@ export const DeploymentStatusPage: React.FC = () => {
                             Configuration Inputs
                         </h3>
                         <div className="space-y-4">
-                            {Object.entries(deployment.inputs).map(([key, value]) => (
+                            {deployment.inputs && Object.entries(deployment.inputs).map(([key, value]) => (
                                 <div key={key} className="flex flex-col">
                                     <label className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-2">
                                         {key.replace(/_/g, ' ')}
                                     </label>
                                     <input
                                         type="text"
-                                        value={typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                                        value={typeof value === 'object' ? JSON.stringify(value) : String(value || '')}
                                         readOnly
                                         className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 font-mono text-sm"
                                     />
@@ -862,12 +941,12 @@ export const DeploymentStatusPage: React.FC = () => {
                             Deployment Outputs
                         </h3>
                         <div className="space-y-3">
-                            {Object.entries(deployment.outputs).map(([key, value]) => (
+                            {deployment.outputs && Object.entries(deployment.outputs).map(([key, value]) => (
                                 <div key={key} className="flex flex-col border-b border-gray-100 dark:border-gray-800 pb-3 last:border-0 last:pb-0">
                                     <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-1">{key}</span>
                                     <div className="flex items-center gap-2 group">
                                         <span className="text-gray-900 dark:text-gray-100 font-mono text-sm break-all flex-1">
-                                            {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                                            {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value || '')}
                                         </span>
                                         <button
                                             onClick={() => copyToClipboard(typeof value === 'object' ? JSON.stringify(value) : String(value), key)}
@@ -908,7 +987,7 @@ export const DeploymentStatusPage: React.FC = () => {
                             </div>
                         ) : pluginManifest?.inputs?.properties ? (
                             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                                {Object.entries(pluginManifest.inputs.properties).map(([key, prop]: [string, any]) => {
+                                {Object.entries(pluginManifest.inputs.properties).filter(([key, prop]: [string, any]) => prop != null).map(([key, prop]: [string, any]) => {
                                     const isRequired = pluginManifest.inputs.required?.includes(key);
                                     const currentValue = updateInputs[key] ?? prop.default ?? '';
                                     
@@ -939,13 +1018,13 @@ export const DeploymentStatusPage: React.FC = () => {
                                                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
                                                     placeholder={prop.default?.toString()}
                                                 />
-                                            ) : prop.type === 'string' && prop.enum ? (
+                                            ) : prop.type === 'string' && prop.enum && Array.isArray(prop.enum) ? (
                                                 <select
                                                     value={currentValue}
                                                     onChange={(e) => handleInputChange(key, e.target.value)}
                                                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
                                                 >
-                                                    {prop.enum.map((option: string) => (
+                                                    {prop.enum.filter((option: any) => option != null).map((option: string) => (
                                                         <option key={option} value={option}>{option}</option>
                                                     ))}
                                                 </select>
@@ -1027,7 +1106,7 @@ export const DeploymentStatusPage: React.FC = () => {
                         
                         <div className="flex-1 overflow-y-auto pr-2">
                             <div className="space-y-4">
-                                {Object.entries(selectedConfig.inputs).map(([key, value]) => (
+                                {selectedConfig.inputs && Object.entries(selectedConfig.inputs).map(([key, value]) => (
                                     <div key={key} className="flex flex-col">
                                         <label className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-2">
                                             {key.replace(/_/g, ' ')}

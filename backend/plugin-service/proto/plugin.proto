@@ -1,0 +1,303 @@
+syntax = "proto3";
+
+package plugin;
+
+// Plugin Service
+service PluginService {
+  // Plugin Upload
+  rpc UploadPlugin(UploadPluginRequest) returns (PluginVersionResponse);
+  rpc UploadMicroserviceTemplate(UploadMicroserviceTemplateRequest) returns (PluginVersionResponse);
+  
+  // Plugin CRUD
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+  rpc GetPlugin(GetPluginRequest) returns (PluginResponse);
+  rpc DeletePlugin(DeletePluginRequest) returns (Empty);
+  rpc LockPlugin(LockPluginRequest) returns (Empty);
+  rpc UnlockPlugin(UnlockPluginRequest) returns (Empty);
+  
+  // Plugin Versions
+  rpc ListPluginVersions(ListPluginVersionsRequest) returns (ListPluginVersionsResponse);
+  rpc GetPluginVersion(GetPluginVersionRequest) returns (PluginVersionResponse);
+  
+  // Plugin Access Management
+  rpc RequestPluginAccess(RequestPluginAccessRequest) returns (PluginAccessRequestResponse);
+  rpc GrantPluginAccess(GrantPluginAccessRequest) returns (PluginAccessResponse);
+  rpc RejectPluginAccess(RejectPluginAccessRequest) returns (Empty);
+  rpc RevokePluginAccess(RevokePluginAccessRequest) returns (Empty);
+  rpc RestorePluginAccess(RestorePluginAccessRequest) returns (Empty);
+  rpc ListAccessRequests(ListAccessRequestsRequest) returns (ListAccessRequestsResponse);
+  rpc ListAccessGrants(ListAccessGrantsRequest) returns (ListAccessGrantsResponse);
+  
+  // Plugin Provisioning
+  rpc ProvisionPlugin(ProvisionPluginRequest) returns (ProvisionResponse);
+  rpc GetJob(GetJobRequest) returns (JobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc GetJobLogs(GetJobLogsRequest) returns (JobLogsResponse);
+  rpc CancelJob(CancelJobRequest) returns (Empty);
+  rpc DeleteJob(DeleteJobRequest) returns (Empty);
+}
+
+// Common Messages
+message Empty {}
+
+// Plugin Upload Messages
+message UploadPluginRequest {
+  bytes file_content = 1;  // ZIP file content
+  string filename = 2;
+  string git_repo_url = 3;
+  string git_branch = 4;
+  string user_id = 5;
+}
+
+message UploadMicroserviceTemplateRequest {
+  string plugin_id = 1;
+  string name = 2;
+  string version = 3;
+  string description = 4;
+  string template_repo_url = 5;
+  string template_path = 6;
+  string author = 7;
+  string user_id = 8;
+}
+
+message PluginVersionResponse {
+  int32 id = 1;
+  string plugin_id = 2;
+  string version = 3;
+  string manifest = 4;  // JSON string
+  string storage_path = 5;
+  string git_repo_url = 6;
+  string git_branch = 7;
+  string template_repo_url = 8;
+  string template_path = 9;
+  string created_at = 10;
+}
+
+// Plugin Provisioning Messages
+message ProvisionPluginRequest {
+  string plugin_id = 1;
+  string version = 2;
+  string inputs = 3;  // JSON string
+  string environment = 4;  // development, staging, production
+  string tags = 5;  // JSON string
+  string deployment_name = 6;
+  string cost_center = 7;
+  string project_code = 8;
+  string user_id = 9;
+  string user_email = 10;  // User email for triggered_by field
+  string business_unit_id = 11;
+  string organization_id = 12;
+}
+
+message ProvisionResponse {
+  string job_id = 1;
+  string deployment_id = 2;
+  string status = 3;
+  string message = 4;
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message ListJobsRequest {
+  string user_id = 1;
+  string business_unit_id = 2;
+  int32 skip = 3;
+  int32 limit = 4;
+  string status = 5;  // Optional filter
+}
+
+message GetJobLogsRequest {
+  string job_id = 1;
+  int32 skip = 2;
+  int32 limit = 3;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+  string user_id = 2;
+}
+
+message DeleteJobRequest {
+  string job_id = 1;
+  string user_id = 2;
+}
+
+message JobResponse {
+  string id = 1;
+  int32 plugin_version_id = 2;
+  string deployment_id = 3;
+  string status = 4;
+  string triggered_by = 5;
+  string inputs = 6;  // JSON string
+  string outputs = 7;  // JSON string, optional
+  int32 retry_count = 8;
+  string error_state = 9;
+  string error_message = 10;
+  string created_at = 11;
+  string finished_at = 12;
+}
+
+message ListJobsResponse {
+  repeated JobResponse jobs = 1;
+  int32 total = 2;
+  int32 skip = 3;
+  int32 limit = 4;
+}
+
+message JobLogResponse {
+  int32 id = 1;
+  string job_id = 2;
+  string timestamp = 3;
+  string level = 4;
+  string message = 5;
+}
+
+message JobLogsResponse {
+  repeated JobLogResponse logs = 1;
+  int32 total = 2;
+}
+
+// Plugin CRUD Messages
+message ListPluginsRequest {
+  string user_id = 1;
+  string business_unit_id = 2;
+}
+
+message GetPluginRequest {
+  string plugin_id = 1;
+  string user_id = 2;
+  string business_unit_id = 3;
+}
+
+message DeletePluginRequest {
+  string plugin_id = 1;
+  string user_id = 2;
+}
+
+message LockPluginRequest {
+  string plugin_id = 1;
+  string user_id = 2;
+}
+
+message UnlockPluginRequest {
+  string plugin_id = 1;
+  string user_id = 2;
+}
+
+message PluginResponse {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string author = 4;
+  bool is_locked = 5;
+  string git_repo_url = 15;  // Admin-only: Git repository URL from latest version
+  string git_branch = 16;    // Admin-only: Git branch from latest version
+  string deployment_type = 6;
+  bool has_access = 7;  // Whether user has access (for locked plugins)
+  bool has_pending_request = 8;  // Whether user has pending access request
+  string created_at = 9;
+  string updated_at = 10;
+  repeated PluginVersionResponse versions = 11;
+  string cloud_provider = 12;  // Cloud provider from manifest (aws, gcp, azure, etc.)
+  string category = 13;  // Plugin category from manifest (storage, compute, database, etc.)
+  string latest_version = 14;  // Latest version string
+}
+
+message ListPluginsResponse {
+  repeated PluginResponse plugins = 1;
+}
+
+// Plugin Versions Messages
+message ListPluginVersionsRequest {
+  string plugin_id = 1;
+}
+
+message GetPluginVersionRequest {
+  string plugin_id = 1;
+  string version = 2;
+}
+
+message ListPluginVersionsResponse {
+  repeated PluginVersionResponse versions = 1;
+}
+
+// Plugin Access Messages
+message RequestPluginAccessRequest {
+  string plugin_id = 1;
+  string user_id = 2;
+  string business_unit_id = 3;
+  string note = 4;
+}
+
+message GrantPluginAccessRequest {
+  string plugin_id = 1;
+  string user_id = 2;  // User to grant access to
+  string granted_by_user_id = 3;  // Admin granting access
+  string business_unit_id = 4;
+}
+
+message RejectPluginAccessRequest {
+  string plugin_id = 1;
+  string user_id = 2;  // User whose request to reject
+  string rejected_by_user_id = 3;  // Admin rejecting
+}
+
+message RevokePluginAccessRequest {
+  string plugin_id = 1;
+  string user_id = 2;  // User to revoke access from
+  string revoked_by_user_id = 3;  // Admin revoking
+}
+
+message RestorePluginAccessRequest {
+  string plugin_id = 1;
+  string user_id = 2;  // User to restore access for
+  string restored_by_user_id = 3;  // Admin restoring
+}
+
+message ListAccessRequestsRequest {
+  string plugin_id = 1;  // Optional: filter by plugin
+  string status = 2;  // Optional: filter by status (pending, approved, rejected)
+  string search = 3;  // Optional: search term
+  string user_id = 4;  // Requesting user's ID for permission-based filtering
+}
+
+message ListAccessGrantsRequest {
+  string plugin_id = 1;  // Optional: filter by plugin
+}
+
+message PluginAccessRequestResponse {
+  string id = 1;
+  string plugin_id = 2;
+  string user_id = 3;
+  string user_email = 4;
+  string user_name = 5;
+  string business_unit_id = 6;
+  string status = 7;  // pending, approved, rejected, revoked
+  string note = 8;
+  string requested_at = 9;
+  string reviewed_at = 10;
+  string reviewed_by = 11;
+}
+
+message PluginAccessResponse {
+  string id = 1;
+  string plugin_id = 2;
+  string user_id = 3;
+  string user_email = 4;
+  string user_name = 5;
+  string business_unit_id = 6;
+  string granted_by = 7;
+  string granted_at = 8;
+}
+
+message ListAccessRequestsResponse {
+  repeated PluginAccessRequestResponse requests = 1;
+  int32 total = 2;
+}
+
+message ListAccessGrantsResponse {
+  repeated PluginAccessResponse grants = 1;
+  int32 total = 2;
+}

@@ -1,0 +1,79 @@
+/* Global styles and responsiveness fixes */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer components {
+  /* Ensure tables are scrollable on small screens */
+  .table-container {
+    @apply w-full overflow-x-auto border border-gray-200 dark:border-gray-800 rounded-xl bg-white dark:bg-gray-900 shadow-sm relative;
+  }
+  
+  table {
+    @apply w-full text-left text-sm border-collapse;
+  }
+  
+  th {
+    @apply px-6 py-4 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800 whitespace-nowrap;
+  }
+  
+  td {
+    @apply px-6 py-4 border-b border-gray-100 dark:border-gray-800 align-middle;
+  }
+
+  /* Responsive Cards Grid */
+  .responsive-grid {
+    @apply grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6;
+  }
+
+  /* Sidebar Icons Alignment */
+  .nav-icon-container {
+    @apply w-8 h-8 flex items-center justify-center rounded-lg transition-colors;
+  }
+}
+
+/* Custom scrollbar for better look in dark mode */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-gray-700 rounded-full hover:bg-gray-400 dark:hover:bg-gray-600 transition-colors;
+}
+
+/* Transitions for light/dark mode */
+* {
+  @apply transition-colors duration-200;
+}
+
+/* Fix for mobile sidebar overflow */
+.mobile-drawer-open {
+  @apply overflow-hidden;
+}
+
+/* Glassmorphism effects */
+.glass-effect {
+  @apply bg-white/70 dark:bg-gray-900/70 backdrop-blur-xl border border-white/20 dark:border-white/5 shadow-xl;
+}
+
+/* Animation for page transitions */
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}

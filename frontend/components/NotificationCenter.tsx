@@ -193,7 +193,7 @@ export const NotificationCenter: React.FC = () => {
 
     const markAllAsRead = async () => {
         try {
-            await api.markAllNotificationsRead();
+            await api.markAllNotificationsRead(user?.id);
             setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
         } catch (err) {
             appLogger.error('Failed to mark all as read:', err);

@@ -1,0 +1,220 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  # Auth Service
+  - name: audit-service
+    url: http://audit-service:8000
+    routes:
+      - name: audit-service-route
+        paths:
+          - /api/v1/audit-logs
+        strip_path: false
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Content-Type
+            - Authorization
+            - Origin
+            - X-Business-Unit-Id
+          exposed_headers:
+            - Authorization
+          credentials: true
+          max_age: 3600
+
+  - name: auth-service
+    url: http://auth-service:8000
+    protocol: http
+    host: auth-service
+    port: 8000
+    routes:
+      - name: auth-service-routes
+        paths:
+          - /api/v1/auth
+          - /api/v1/users
+          - /api/v1/roles
+          - /api/v1/groups
+          - /api/v1/organizations
+          - /api/v1/business-units
+          - /api/v1/business-unit-groups
+          - /api/v1/permissions
+          - /api/admin/credentials
+        strip_path: false
+        preserve_host: true
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - PATCH
+            - OPTIONS
+          headers:
+            - Accept
+            - Accept-Version
+            - Content-Length
+            - Content-MD5
+            - Content-Type
+            - Date
+            - Authorization
+            - X-Requested-With
+            - X-Business-Unit-Id
+            - Origin
+          exposed_headers:
+            - Authorization
+          credentials: true
+          max_age: 3600
+
+  # Notification Service
+  - name: notification-service
+    url: http://notification-service:8000
+    protocol: http
+    host: notification-service
+    port: 8000
+    routes:
+      - name: notification-service-routes
+        paths:
+          - /api/v1/notifications
+        strip_path: false
+        preserve_host: true
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Content-Type
+            - Authorization
+            - Origin
+            - X-Business-Unit-Id
+          exposed_headers:
+            - Authorization
+          credentials: true
+          max_age: 3600
+
+  # Plugin Service
+  - name: plugin-service
+    url: http://plugin-service:8000
+    protocol: http
+    host: plugin-service
+    port: 8000
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: plugin-service-routes
+        paths:
+          - /api/v1/plugins
+          - /api/v1/provision
+          - /storage/plugins
+        strip_path: false
+        preserve_host: true
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Content-Type
+            - Authorization
+            - Origin
+            - X-Business-Unit-Id
+          exposed_headers:
+            - Authorization
+          credentials: true
+          max_age: 3600
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 100  # 100 MB
+
+  # Deployment Service
+  - name: deployment-service
+    url: http://deployment-service:8000
+    protocol: http
+    host: deployment-service
+    port: 8000
+    routes:
+      - name: deployment-service-routes
+        paths:
+          - /api/v1/deployments
+        strip_path: false
+        preserve_host: true
+        path_handling: v0 # Use v0 to match prefix paths correctly
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Content-Type
+            - Authorization
+            - Origin
+            - X-Business-Unit-Id
+          exposed_headers:
+            - Authorization
+          credentials: true
+          max_age: 3600
+
+  # Worker Service (for webhooks)
+  - name: worker-service
+    url: http://worker-service:8000
+    protocol: http
+    host: worker-service
+    port: 8000
+    routes:
+      - name: worker-service-routes
+        paths:
+          - /api/webhooks/github
+        strip_path: false
+        preserve_host: true
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - POST
+            - OPTIONS
+          headers:
+            - Accept
+            - Content-Type
+            - X-GitHub-Event
+            - X-Hub-Signature-256
+            - Origin
+          credentials: true
+          max_age: 3600

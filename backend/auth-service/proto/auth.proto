@@ -1,0 +1,587 @@
+syntax = "proto3";
+
+package auth;
+
+// Authentication Service
+service AuthenticationService {
+  rpc Login(LoginRequest) returns (TokenResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (TokenResponse);
+  rpc Logout(LogoutRequest) returns (Empty);
+  rpc ValidateToken(ValidateTokenRequest) returns (UserInfo);
+  rpc Register(RegisterRequest) returns (UserResponse);
+}
+
+// Authorization Service
+service AuthorizationService {
+  rpc CheckPermission(PermissionCheckRequest) returns (PermissionCheckResponse);
+  rpc GetUserRoles(GetUserRolesRequest) returns (GetUserRolesResponse);
+  rpc GetUserPermissions(GetUserPermissionsRequest) returns (GetUserPermissionsResponse);
+  rpc IsPlatformAdmin(IsPlatformAdminRequest) returns (IsPlatformAdminResponse);
+}
+
+// User Management Service
+service UserService {
+  rpc CreateUser(CreateUserRequest) returns (UserResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (UserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (Empty);
+  rpc GetUser(GetUserRequest) returns (UserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (UserResponse);
+  rpc UpdateCurrentUser(UpdateCurrentUserRequest) returns (UserResponse);
+  rpc ChangePassword(ChangePasswordRequest) returns (Empty);
+}
+
+// Role Management Service
+service RoleService {
+  rpc CreateRole(CreateRoleRequest) returns (RoleResponse);
+  rpc UpdateRole(UpdateRoleRequest) returns (RoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (Empty);
+  rpc GetRole(GetRoleRequest) returns (RoleResponse);
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc AssignRole(AssignRoleRequest) returns (Empty);
+  rpc RemoveRole(RemoveRoleRequest) returns (Empty);
+}
+
+// Group Management Service
+service GroupService {
+  rpc CreateGroup(CreateGroupRequest) returns (GroupResponse);
+  rpc UpdateGroup(UpdateGroupRequest) returns (GroupResponse);
+  rpc DeleteGroup(DeleteGroupRequest) returns (Empty);
+  rpc GetGroup(GetGroupRequest) returns (GroupResponse);
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+  rpc AddGroupMember(AddGroupMemberRequest) returns (Empty);
+  rpc RemoveGroupMember(RemoveGroupMemberRequest) returns (Empty);
+}
+
+// Business Unit Service
+service BusinessUnitService {
+  rpc CreateBusinessUnit(CreateBusinessUnitRequest) returns (BusinessUnitResponse);
+  rpc UpdateBusinessUnit(UpdateBusinessUnitRequest) returns (BusinessUnitResponse);
+  rpc DeleteBusinessUnit(DeleteBusinessUnitRequest) returns (Empty);
+  rpc GetBusinessUnit(GetBusinessUnitRequest) returns (BusinessUnitResponse);
+  rpc ListBusinessUnits(ListBusinessUnitsRequest) returns (ListBusinessUnitsResponse);
+  rpc AddBusinessUnitMember(AddBusinessUnitMemberRequest) returns (Empty);
+  rpc RemoveBusinessUnitMember(RemoveBusinessUnitMemberRequest) returns (Empty);
+  rpc ListBusinessUnitMembers(ListBusinessUnitMembersRequest) returns (ListBusinessUnitMembersResponse);
+}
+
+// Organization Service
+service OrganizationService {
+  rpc CreateOrganization(CreateOrganizationRequest) returns (OrganizationResponse);
+  rpc UpdateOrganization(UpdateOrganizationRequest) returns (OrganizationResponse);
+  rpc DeleteOrganization(DeleteOrganizationRequest) returns (Empty);
+  rpc GetOrganization(GetOrganizationRequest) returns (OrganizationResponse);
+  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
+  rpc GetCurrentOrganization(GetCurrentOrganizationRequest) returns (OrganizationResponse);
+}
+
+// Business Unit Group Service
+service BusinessUnitGroupService {
+  rpc CreateBusinessUnitGroup(CreateBusinessUnitGroupRequest) returns (BusinessUnitGroupResponse);
+  rpc UpdateBusinessUnitGroup(UpdateBusinessUnitGroupRequest) returns (BusinessUnitGroupResponse);
+  rpc DeleteBusinessUnitGroup(DeleteBusinessUnitGroupRequest) returns (Empty);
+  rpc GetBusinessUnitGroup(GetBusinessUnitGroupRequest) returns (BusinessUnitGroupResponse);
+  rpc ListBusinessUnitGroups(ListBusinessUnitGroupsRequest) returns (ListBusinessUnitGroupsResponse);
+  rpc AddBusinessUnitGroupMember(AddBusinessUnitGroupMemberRequest) returns (Empty);
+  rpc RemoveBusinessUnitGroupMember(RemoveBusinessUnitGroupMemberRequest) returns (Empty);
+  rpc ListBusinessUnitGroupMembers(ListBusinessUnitGroupMembersRequest) returns (ListBusinessUnitGroupMembersResponse);
+}
+
+// Credential Service
+service CredentialService {
+  rpc CreateCredential(CreateCredentialRequest) returns (CredentialResponse);
+  rpc UpdateCredential(UpdateCredentialRequest) returns (CredentialResponse);
+  rpc DeleteCredential(DeleteCredentialRequest) returns (Empty);
+  rpc GetCredential(GetCredentialRequest) returns (CredentialResponse);
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+}
+
+// Common Messages
+message Empty {}
+
+message Error {
+  string message = 1;
+  int32 code = 2;
+}
+
+// Authentication Messages
+message LoginRequest {
+  string identifier = 1; // Email or username
+  string password = 2;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message RegisterRequest {
+  string email = 1;
+  string username = 2;
+  string password = 3;
+  string full_name = 4;
+  string organization_slug = 5;
+}
+
+message TokenResponse {
+  string access_token = 1;
+  string token_type = 2;
+  UserResponse user = 3;
+}
+
+message UserInfo {
+  string user_id = 1;
+  string email = 2;
+  string username = 3;
+  string organization_id = 4;
+  bool is_active = 5;
+  repeated string roles = 6;
+}
+
+// Authorization Messages
+message PermissionCheckRequest {
+  string user_id = 1;
+  string permission_slug = 2;
+  string business_unit_id = 3; // Optional, empty string if not needed
+  string organization_id = 4; // Optional, can be derived from user
+}
+
+message PermissionCheckResponse {
+  bool allowed = 1;
+  string message = 2;
+}
+
+message GetUserRolesRequest {
+  string user_id = 1;
+  string organization_id = 2; // Optional
+}
+
+message GetUserRolesResponse {
+  repeated string roles = 1;
+}
+
+message GetUserPermissionsRequest {
+  string user_id = 1;
+  string business_unit_id = 2; // Optional, empty string if not needed
+  string organization_id = 3; // Optional
+}
+
+message GetUserPermissionsResponse {
+  repeated string permissions = 1;
+}
+
+message IsPlatformAdminRequest {
+  string user_id = 1;
+  string organization_id = 2; // Optional
+}
+
+message IsPlatformAdminResponse {
+  bool is_admin = 1;
+}
+
+// User Messages
+message CreateUserRequest {
+  string email = 1;
+  string username = 2;
+  string password = 3;
+  string full_name = 4;
+  string organization_id = 5;
+  repeated string role_names = 6;
+}
+
+message UpdateUserRequest {
+  string user_id = 1;
+  string email = 2; // Optional, empty string to skip
+  string full_name = 3; // Optional
+  string password = 4; // Optional
+  optional bool is_active = 5; // Optional - use optional for presence tracking
+  repeated string role_names = 6; // Optional
+}
+
+message DeleteUserRequest {
+  string user_id = 1;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetCurrentUserRequest {
+  string token = 1;
+}
+
+message UpdateCurrentUserRequest {
+  string token = 1;
+  string email = 2; // Optional
+  string full_name = 3; // Optional
+}
+
+message ChangePasswordRequest {
+  string token = 1;
+  string current_password = 2;
+  string new_password = 3;
+}
+
+message ListUsersRequest {
+  int32 skip = 1;
+  int32 limit = 2;
+  string search = 3; // Optional search term
+  string role_filter = 4; // Optional role name filter
+}
+
+message ListUsersResponse {
+  repeated UserResponse users = 1;
+  int32 total = 2;
+  int32 skip = 3;
+  int32 limit = 4;
+}
+
+message UserResponse {
+  string id = 1;
+  string email = 2;
+  string username = 3;
+  string full_name = 4;
+  repeated string roles = 5;
+  string avatar_url = 6;
+  bool is_active = 7;
+  bool is_admin = 8;
+  string created_at = 9;
+  string organization_id = 10;
+  string active_business_unit_id = 11;
+}
+
+// Role Messages
+message CreateRoleRequest {
+  string name = 1;
+  string description = 2;
+  bool is_platform_role = 3;
+  repeated string permissions = 4;
+}
+
+message UpdateRoleRequest {
+  string role_id = 1;
+  string name = 2; // Optional
+  string description = 3; // Optional
+  optional bool is_platform_role = 4; // Explicitly optional for HasField()
+  repeated string permissions = 5;
+}
+
+message DeleteRoleRequest {
+  string role_id = 1;
+}
+
+message GetRoleRequest {
+  string role_id = 1;
+}
+
+message ListRolesRequest {
+  optional bool platform_roles_only = 1; // Optional filter
+}
+
+message ListRolesResponse {
+  repeated RoleResponse roles = 1;
+}
+
+message AssignRoleRequest {
+  string user_id = 1;
+  string role_name = 2;
+  string organization_id = 3;
+}
+
+message RemoveRoleRequest {
+  string user_id = 1;
+  string role_name = 2;
+  string organization_id = 3;
+}
+
+message RoleResponse {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool is_platform_role = 4;
+  string created_at = 5;
+  repeated string permissions = 6;
+}
+
+// Group Messages
+message CreateGroupRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message UpdateGroupRequest {
+  string group_id = 1;
+  string name = 2; // Optional
+  string description = 3; // Optional
+}
+
+message DeleteGroupRequest {
+  string group_id = 1;
+}
+
+message GetGroupRequest {
+  string group_id = 1;
+}
+
+message ListGroupsRequest {
+  // Empty for now, can add filters later
+}
+
+message ListGroupsResponse {
+  repeated GroupResponse groups = 1;
+}
+
+message AddGroupMemberRequest {
+  string group_id = 1;
+  string user_id = 2;
+}
+
+message RemoveGroupMemberRequest {
+  string group_id = 1;
+  string user_id = 2;
+}
+
+message GroupResponse {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string created_at = 4;
+}
+
+// Business Unit Messages
+message CreateBusinessUnitRequest {
+  string name = 1;
+  string slug = 2;
+  string description = 3;
+  string organization_id = 4;
+}
+
+message UpdateBusinessUnitRequest {
+  string business_unit_id = 1;
+  string name = 2; // Optional
+  string description = 3; // Optional
+  optional bool is_active = 4; // Optional
+}
+
+message DeleteBusinessUnitRequest {
+  string business_unit_id = 1;
+}
+
+message GetBusinessUnitRequest {
+  string business_unit_id = 1;
+}
+
+message ListBusinessUnitsRequest {
+  string user_id = 1; // Optional, filter by user membership
+  string organization_id = 2; // Optional
+}
+
+message ListBusinessUnitsResponse {
+  repeated BusinessUnitResponse business_units = 1;
+}
+
+message AddBusinessUnitMemberRequest {
+  string business_unit_id = 1;
+  string user_email = 2;
+  repeated string role_ids = 3; // List of role IDs as strings
+}
+
+message RemoveBusinessUnitMemberRequest {
+  string business_unit_id = 1;
+  string user_id = 2;
+}
+
+message ListBusinessUnitMembersRequest {
+  string business_unit_id = 1;
+}
+
+message ListBusinessUnitMembersResponse {
+  repeated BusinessUnitMemberResponse members = 1;
+}
+
+message BusinessUnitResponse {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string description = 4;
+  string organization_id = 5;
+  bool is_active = 6;
+  string role = 7; // Current user's role in this BU
+  int32 member_count = 8;
+  bool can_manage_members = 9;
+  string created_at = 10;
+  string updated_at = 11;
+}
+
+message BusinessUnitMemberResponse {
+  string id = 1;
+  string business_unit_id = 2;
+  string user_id = 3;
+  string user_email = 4;
+  string user_name = 5;
+  string role = 6; // Role name
+  string role_id = 7; // Role ID
+  string created_at = 8;
+}
+
+// Organization Messages
+message CreateOrganizationRequest {
+  string name = 1;
+  string slug = 2;
+  string description = 3;
+}
+
+message UpdateOrganizationRequest {
+  string organization_id = 1;
+  string name = 2; // Optional
+  string description = 3; // Optional
+  bool is_active = 4; // Optional
+}
+
+message DeleteOrganizationRequest {
+  string organization_id = 1;
+}
+
+message GetOrganizationRequest {
+  string organization_id = 1;
+}
+
+message ListOrganizationsRequest {
+  int32 skip = 1;
+  int32 limit = 2;
+}
+
+message GetCurrentOrganizationRequest {
+  string user_id = 1;
+}
+
+message OrganizationResponse {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string description = 4;
+  bool is_active = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message ListOrganizationsResponse {
+  repeated OrganizationResponse organizations = 1;
+}
+
+// Business Unit Group Messages
+message CreateBusinessUnitGroupRequest {
+  string business_unit_id = 1;
+  string name = 2;
+  string description = 3;
+  string role_id = 4;
+}
+
+message UpdateBusinessUnitGroupRequest {
+  string business_unit_id = 1;
+  string group_id = 2;
+  string name = 3; // Optional
+  string description = 4; // Optional
+}
+
+message DeleteBusinessUnitGroupRequest {
+  string business_unit_id = 1;
+  string group_id = 2;
+}
+
+message GetBusinessUnitGroupRequest {
+  string business_unit_id = 1;
+  string group_id = 2;
+}
+
+message ListBusinessUnitGroupsRequest {
+  string business_unit_id = 1;
+}
+
+message AddBusinessUnitGroupMemberRequest {
+  string business_unit_id = 1;
+  string group_id = 2;
+  string user_id = 3;
+}
+
+message RemoveBusinessUnitGroupMemberRequest {
+  string business_unit_id = 1;
+  string group_id = 2;
+  string user_id = 3;
+}
+
+message ListBusinessUnitGroupMembersRequest {
+  string business_unit_id = 1;
+  string group_id = 2;
+}
+
+message BusinessUnitGroupResponse {
+  string id = 1;
+  string business_unit_id = 2;
+  string name = 3;
+  string description = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message ListBusinessUnitGroupsResponse {
+  repeated BusinessUnitGroupResponse groups = 1;
+}
+
+message BusinessUnitGroupMemberResponse {
+  string id = 1;
+  string business_unit_id = 2;
+  string group_id = 3;
+  string user_id = 4;
+  string user_email = 5;
+  string user_name = 6;
+  string created_at = 7;
+}
+
+message ListBusinessUnitGroupMembersResponse {
+  repeated BusinessUnitGroupMemberResponse members = 1;
+}
+
+// Credential Messages
+message CreateCredentialRequest {
+  string name = 1;
+  string provider = 2; // aws, gcp, azure
+  string credentials = 3; // JSON string
+}
+
+message UpdateCredentialRequest {
+  string credential_id = 1;
+  string name = 2; // Optional
+  string credentials = 3; // Optional
+}
+
+message DeleteCredentialRequest {
+  string credential_id = 1;
+}
+
+message GetCredentialRequest {
+  string credential_id = 1;
+}
+
+message ListCredentialsRequest {
+  // Empty for now
+}
+
+message CredentialResponse {
+  string id = 1;
+  string name = 2;
+  string provider = 3;
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+message ListCredentialsResponse {
+  repeated CredentialResponse credentials = 1;
+}

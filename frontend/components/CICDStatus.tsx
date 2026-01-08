@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Clock, Loader, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Loader2, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
 import api from '../services/api';
 
 interface CICDStatusProps {
@@ -70,7 +70,7 @@ export const CICDStatus: React.FC<CICDStatusProps> = ({
 
     const getStatusIcon = () => {
         if (loading) {
-            return <Loader className="w-5 h-5 animate-spin text-gray-400" />;
+            return <Loader2 className="w-5 h-5 animate-spin text-gray-400" />;
         }
         
         switch (status?.ci_cd_status) {
@@ -80,7 +80,7 @@ export const CICDStatus: React.FC<CICDStatusProps> = ({
             case 'cancelled':
                 return <XCircle className="w-5 h-5 text-red-500" />;
             case 'running':
-                return <Loader className="w-5 h-5 animate-spin text-blue-500" />;
+                return <Loader2 className="w-5 h-5 animate-spin text-blue-500" />;
             case 'pending':
                 return <Clock className="w-5 h-5 text-yellow-500" />;
             default:
@@ -127,7 +127,7 @@ export const CICDStatus: React.FC<CICDStatusProps> = ({
     if (loading && !status) {
         return (
             <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
-                <Loader className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Loading CI/CD status...</span>
             </div>
         );
