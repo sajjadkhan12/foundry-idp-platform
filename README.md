@@ -28,7 +28,7 @@ A production-ready, enterprise-grade Internal Developer Platform for streamlined
 
 ## 🎯 Overview
 
-**Foundry Platform** is a comprehensive Internal Developer Platform that enables organizations to:
+**Foundry Platform** is a comprehensive Internal Developer Platform built with a **microservices architecture** that enables organizations to:
 
 - **Provision Infrastructure**: Deploy cloud resources across AWS, GCP, and Azure using Pulumi-based plugins
 - **Manage Microservices**: Create, deploy, and manage microservices with GitOps workflows
@@ -37,6 +37,9 @@ A production-ready, enterprise-grade Internal Developer Platform for streamlined
 - **CI/CD Integration**: Native GitHub Actions integration with webhook support
 - **Pulumi ESC Integration**: Automatic cloud credential management via Pulumi Environments, Secrets, and Configuration
 - **Audit Logging**: Complete activity tracking and compliance monitoring
+- **Scalable Architecture**: Independent microservices that can scale independently
+- **API Gateway**: Kong-based routing and authentication for all services
+- **gRPC Communication**: High-performance inter-service communication
 
 ---
 
@@ -86,10 +89,69 @@ A production-ready, enterprise-grade Internal Developer Platform for streamlined
 
 ## 🏗️ Architecture
 
-### Backend Stack
+### Microservices Architecture
+
+The platform is built using a **microservices architecture** with the following services:
+
+#### Core Services
+
+1. **Auth Service** (`auth-service`)
+   - Authentication and authorization
+   - User, role, group, and business unit management
+   - JWT token generation and validation
+   - Casbin RBAC enforcement
+   - gRPC + REST API
+
+2. **Plugin Service** (`plugin-service`)
+   - Plugin upload and management
+   - Plugin versioning
+   - Plugin access control and approval workflows
+   - GitOps integration
+   - gRPC + REST API
+
+3. **Deployment Service** (`deployment-service`)
+   - Deployment lifecycle management
+   - Deployment history and tracking
+   - Tag management
+   - CI/CD status tracking
+   - gRPC + REST API
+
+4. **Notification Service** (`notification-service`)
+   - User notifications
+   - Real-time notification delivery
+   - Unread tracking
+   - gRPC + REST API
+
+5. **Audit Service** (`audit-service`)
+   - Activity logging and audit trails
+   - Compliance monitoring
+   - Search and filtering
+   - Separate PostgreSQL database
+   - gRPC + REST API
+
+6. **Worker Service** (`worker-service`, `worker-celery`, `worker-beat`)
+   - Infrastructure provisioning (Pulumi)
+   - Microservice provisioning
+   - Background job processing (Celery)
+   - Scheduled tasks (Celery Beat)
+   - GitHub webhook processing
+   - gRPC + REST API
+
+#### Infrastructure Services
+
+- **Kong API Gateway**: Routes requests to microservices, handles authentication
+- **PostgreSQL**: Main database (shared across services)
+- **PostgreSQL Audit**: Separate database for audit logs
+- **Redis**: Message broker for Celery, caching
+
+### Technology Stack
+
+#### Backend Stack
 
 ```
-FastAPI (Python 3.11+)
+Microservices (Python 3.11+)
+├── Communication: gRPC (inter-service) + REST (external)
+├── Framework: FastAPI
 ├── Database: PostgreSQL + SQLAlchemy ORM (Async)
 ├── Authorization: Casbin (RBAC with domain isolation)
 ├── Task Queue: Celery + Redis
@@ -97,10 +159,11 @@ FastAPI (Python 3.11+)
 ├── Git Operations: GitPython
 ├── Cloud Credentials: Pulumi ESC (automatic OIDC-based credential management)
 ├── Encryption: Cryptography (Fernet)
+├── API Gateway: Kong
 └── Authentication: JWT (Access + Refresh tokens)
 ```
 
-### Frontend Stack
+#### Frontend Stack
 
 ```
 React 18 + TypeScript
@@ -112,7 +175,7 @@ React 18 + TypeScript
 └── API Client: Axios
 ```
 
-### System Components
+### System Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -121,25 +184,41 @@ React 18 + TypeScript
 └─────────────────────────────────────────────────────────────┘
                             ↓ HTTPS/JWT
 ┌─────────────────────────────────────────────────────────────┐
-│                     FastAPI Backend                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   Auth API   │  │  Plugin API  │  │  Deploy API  │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│                                                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Casbin RBAC  │  │    Celery    │  │  Pulumi Svc  │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│                    Kong API Gateway                          │
+│              (Routes, Authentication, Rate Limiting)         │
 └─────────────────────────────────────────────────────────────┘
-         ↓                    ↓                    ↓
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  PostgreSQL  │    │    Redis     │    │    GitHub    │
-└──────────────┘    └──────────────┘    └──────────────┘
+         ↓              ↓              ↓              ↓
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ Auth Service │ │Plugin Service│ │Deploy Service│ │Notify Service│
+│  (gRPC+REST) │ │  (gRPC+REST) │ │  (gRPC+REST) │ │  (gRPC+REST) │
+└──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+         ↓              ↓              ↓              ↓
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ Audit Service│ │Worker Service │ │Worker Celery │ │Worker Beat   │
+│  (gRPC+REST) │ │  (gRPC+REST)  │ │  (Async Jobs)│ │  (Scheduled) │
+└──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+         ↓              ↓              ↓              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    Data Layer                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │  PostgreSQL  │  │PostgreSQL     │  │    Redis     │    │
+│  │   (Main DB)  │  │  (Audit DB)  │  │ (Broker/Cache)│   │
+│  └──────────────┘  └──────────────┘  └──────────────┘    │
+└─────────────────────────────────────────────────────────────┘
          ↓                                        ↓
 ┌──────────────────────────────────────────────────────────────┐
 │         Cloud Providers (via Pulumi ESC)                      │
 │         AWS          │        GCP       │       Azure        │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+### Communication Patterns
+
+- **Frontend ↔ Backend**: REST API via Kong API Gateway
+- **Inter-Service**: gRPC for high-performance internal communication
+- **External Access**: REST adapters exposed through Kong
+- **Async Tasks**: Celery workers process background jobs via Redis
+- **Scheduled Tasks**: Celery Beat for periodic operations
 
 ---
 
@@ -234,106 +313,164 @@ React 18 + TypeScript
 
 ### Prerequisites
 
-- **PostgreSQL** (v14+)
-- **Node.js** (v18+)
-- **Python** (v3.11+)
-- **UV** package manager
-- **Redis** (v6+)
+- **Docker** (v20.10+) and **Docker Compose** (v2.0+)
+- **Node.js** (v18+) - for local frontend development (optional)
+- **Python** (v3.11+) - for local backend development (optional)
 
-### Option 1: Automated Start (Recommended)
-**1. Backend Setup:**
+### Option 1: Docker Compose (Recommended)
+
+The easiest way to run the entire platform is using Docker Compose, which orchestrates all microservices:
+
 ```bash
-cd backend
+# Clone the repository
+git clone <repository-url>
+cd foundry-idp
 
-# Install UV package manager
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Create .env file (optional - uses defaults if not provided)
+cat > .env << EOF
+SECRET_KEY=your-secret-key-here
+ADMIN_EMAIL=admin@foundry-idp.com
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=CHANGE_ME_IN_PRODUCTION
+DEBUG=true
+EOF
 
-# Install dependencies
-uv sync
+# Start all services
+docker compose up -d
 
-# Create .env file (see Configuration section)
-cp .env.example .env
-# Edit .env with your values
+# View logs
+docker compose logs -f
 
-# Setup PostgreSQL database
-createdb Foundry_platform
-
-# Start backend server
-uv run uvicorn app.main:app --reload --port 8000
+# Stop all services
+docker compose down
 ```
 
-**2. Celery Worker (separate terminal):**
+**Services will be available at:**
+- **Frontend**: http://localhost:3000
+- **API Gateway (Kong)**: http://localhost:8000
+- **Kong Admin API**: http://localhost:8001
+- **PostgreSQL**: localhost:5432
+- **PostgreSQL Audit**: localhost:5433
+- **Redis**: localhost:6379
+
+**gRPC Ports (for debugging):**
+- Auth Service: localhost:50056
+- Notification Service: localhost:50052
+- Plugin Service: localhost:50053
+- Worker Service: localhost:50054
+- Deployment Service: localhost:50055
+- Audit Service: localhost:50057
+
+### Option 2: Local Development
+
+For local development of individual services:
+
+**1. Setup Databases:**
 ```bash
-cd backend
-uv run celery -A app.worker worker --loglevel=info
+# Start PostgreSQL and Redis
+docker compose up -d postgres postgres-audit redis
+
+# Or use local installations
+createdb devplatform_idp
+createdb audit_db
 ```
 
-**3. Frontend Setup:**
+**2. Auth Service:**
+```bash
+cd backend/auth-service
+pip install -r requirements.txt
+python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. proto/auth.proto
+uvicorn app.rest_adapter:app --reload --port 8001
+```
+
+**3. Other Services:**
+Similar setup for other services - see individual service READMEs in `backend/<service-name>/README.md`
+
+**4. Frontend:**
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Create .env file
 echo "VITE_API_URL=http://localhost:8000" > .env
-
-# Start dev server
 npm run dev
 ```
 
-### Access Points
-
-- **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
-- **Redoc**: http://localhost:8000/redoc
-
 ### Default Admin Credentials
 
-The system creates a default admin user on first startup. Check the backend logs for credentials, or use the values from your `.env` file:
+The system automatically creates a default admin user on first startup via the `auth-service`. Credentials are set via environment variables:
 
 ```
-Email: [ADMIN_EMAIL from .env]
-Password: [ADMIN_PASSWORD from .env]
+Email: admin@foundry-idp.com (or ADMIN_EMAIL from .env)
+Username: admin (or ADMIN_USERNAME from .env)
+Password: CHANGE_ME_IN_PRODUCTION (or ADMIN_PASSWORD from .env)
 ```
+
+**⚠️ Important**: Change the default admin password in production!
 
 ---
 
 ## ⚙️ Configuration
 
-### Backend Environment Variables (`.env`)
+### Docker Compose Environment Variables
 
-
-#### Pulumi ESC Configuration
-
-The platform uses Pulumi ESC for automatic cloud credential management. Configure ESC environments in Pulumi Cloud and reference them in your application:
+Create a `.env` file in the root directory:
 
 ```bash
-# Pulumi Cloud Configuration
+# Security
+SECRET_KEY=your-secret-key-change-in-production
+DEBUG=true
+
+# Admin User (created automatically on first startup)
+ADMIN_EMAIL=admin@foundry-idp.com
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=CHANGE_ME_IN_PRODUCTION
+
+# Pulumi Configuration (for worker-service)
 PULUMI_ACCESS_TOKEN=your-pulumi-access-token
 PULUMI_ORG=your-org-name
-
-# Pulumi ESC Environments (format: "org/environment-name")
 PULUMI_ESC_ENVIRONMENT_GCP=your-org/gcp-production
 PULUMI_ESC_ENVIRONMENT_AWS=your-org/aws-production
 PULUMI_ESC_ENVIRONMENT_AZURE=your-org/azure-production
 PULUMI_USE_ESC=true
+PULUMI_CONFIG_PASSPHRASE=default-passphrase
+
+# GitHub Integration (for GitOps)
+GITHUB_REPOSITORY=your-org/your-repo
+GITHUB_TOKEN=your-github-token
+GITHUB_TEMPLATE_REPO_URL=https://github.com/your-org/template-repo
+MICROSERVICE_REPO_ORG=your-org
+
+# Encryption (for sensitive data)
+ENCRYPTION_KEY=your-encryption-key-base64-encoded
 ```
 
-**Note:** Detailed setup instructions for ESC environments are in the [Backend README](backend/README.md#pulumi-esc-configuration).
+### Service-Specific Configuration
 
-#### Plugin Storage
-```bash
-PLUGINS_STORAGE_PATH=./storage/plugins
-```
+Each microservice has its own configuration. See individual service READMEs:
+- [Auth Service](backend/auth-service/README.md)
+- [Plugin Service](backend/plugin-service/README.md)
+- [Deployment Service](backend/deployment-service/README.md)
+- [Notification Service](backend/notification-service/README.md)
+- [Worker Service](backend/worker-service/README.md)
+- [Audit Service](backend/audit-service/README.md)
+
+### Pulumi ESC Configuration
+
+The platform uses Pulumi ESC for automatic cloud credential management. Configure ESC environments in Pulumi Cloud:
+
+1. Create ESC environments in Pulumi Cloud for each cloud provider
+2. Configure OIDC-based authentication in each environment
+3. Reference environments in `.env` file (see above)
+
+**Note:** Detailed setup instructions for ESC environments are in the [Worker Service README](backend/worker-service/README.md).
 
 ### Frontend Environment Variables
 
-Create `frontend/.env`:
+For local frontend development, create `frontend/.env`:
 ```bash
 VITE_API_URL=http://localhost:8000
 ```
+
+For Docker, the frontend is built with the API URL baked in via build args.
 
 ---
 
@@ -341,25 +478,29 @@ VITE_API_URL=http://localhost:8000
 
 ### Authentication Flow
 
-1. **Login**: User submits email/password
-2. **Token Generation**: Backend generates:
+1. **Login**: User submits email/password to Kong API Gateway
+2. **Request Routing**: Kong routes to `auth-service` via REST adapter
+3. **Token Generation**: Auth service generates:
    - Access token (JWT, 15 min expiry)
    - Refresh token (UUID, 7 days expiry, stored in DB)
-3. **Cookie Storage**: Refresh token stored in HTTP-only cookie
-4. **API Requests**: Access token sent in Authorization header
-5. **Token Refresh**: When access token expires, use refresh token to get new access token
-6. **Logout**: Delete refresh token from DB and clear cookie
+4. **Cookie Storage**: Refresh token stored in HTTP-only cookie
+5. **API Requests**: Access token sent in Authorization header
+6. **Token Validation**: Kong validates token with `auth-service` before routing
+7. **Token Refresh**: When access token expires, use refresh token to get new access token
+8. **Logout**: Delete refresh token from DB and clear cookie
 
 ### Authorization Flow
 
 1. **Request**: User makes API request with access token
-2. **User Extraction**: Decode JWT to get user ID
-3. **Organization Context**: Load user's organization
-4. **Permission Check**: Casbin enforcer checks:
+2. **Kong Validation**: Kong validates token with `auth-service`
+3. **Request Routing**: Kong routes to appropriate microservice
+4. **Service Authorization**: Microservice calls `auth-service` gRPC endpoint for permission check
+5. **Permission Check**: Auth service uses Casbin enforcer to check:
    - User's direct roles
    - Roles inherited from groups
    - Organization domain isolation
-5. **Resource Access**: Grant or deny based on policies
+   - Business unit context
+6. **Resource Access**: Grant or deny based on policies
 
 ### RBAC Model (Casbin)
 
@@ -412,6 +553,25 @@ g, user789, bu-123, org123  # User is member of BU bu-123 with developer role
 - `permissions_metadata` table stores permission metadata (name, description, category, icon) for UI display
 - `deployments` table includes `environment`, `cost_center`, and `project_code` columns
 - `deployment_tags` table provides flexible key-value tagging with unique constraint on (deployment_id, key)
+- Shared PostgreSQL database for most services (auth, plugin, deployment, notification, worker)
+- Separate PostgreSQL database for audit service
+
+### Microservices Communication
+
+- **gRPC**: Used for inter-service communication (high performance, type-safe)
+- **REST**: Exposed through Kong API Gateway for external access
+- **Service Discovery**: Services communicate via Docker network names
+- **Database**: Most services share the main PostgreSQL database for consistency
+- **Audit**: Separate database for audit logs to ensure compliance and performance isolation
+
+### Adding a New Microservice
+
+1. Create service directory in `backend/<service-name>`
+2. Define gRPC proto file in `proto/` directory
+3. Implement gRPC server and REST adapter
+4. Add service to `docker-compose.yml`
+5. Configure Kong routes in `backend/kong/kong.yml`
+6. Update this README with service details
 
 ### Adding a New API Endpoint
 
@@ -475,3 +635,63 @@ g, user789, bu-123, org123  # User is member of BU bu-123 with developer role
 - **Deployment - Development/Staging/Production**: Environment-specific permissions
 - **Plugin Management**: Plugin upload, deletion, and provisioning
 - **Audit**: Audit log access
+
+---
+
+## 🚀 Production Deployment
+
+### Docker Compose Production
+
+For production deployment with Docker Compose:
+
+1. **Environment Configuration:**
+   ```bash
+   # Set production values
+   SECRET_KEY=<strong-random-secret>
+   DEBUG=false
+   ADMIN_PASSWORD=<strong-password>
+   PULUMI_ACCESS_TOKEN=<your-token>
+   ENCRYPTION_KEY=<base64-encoded-key>
+   ```
+
+2. **Database Backups:**
+   - Configure regular backups for PostgreSQL volumes
+   - Use persistent volumes for data retention
+   - Consider using managed database services
+
+3. **Security:**
+   - Change all default passwords
+   - Use strong encryption keys
+   - Enable HTTPS/TLS for Kong
+   - Configure firewall rules
+   - Restrict gRPC ports to internal network only
+
+4. **Scaling:**
+   - Scale worker-celery instances for higher throughput
+   - Use external Redis/PostgreSQL for better performance
+   - Consider load balancing for Kong
+
+### Kubernetes Deployment
+
+Kubernetes manifests are available in `foundry-idp-k8s/`:
+
+```bash
+cd foundry-idp-k8s
+kubectl apply -k .
+```
+
+See [foundry-idp-k8s/README.md](../foundry-idp-k8s/README.md) for detailed Kubernetes deployment instructions.
+
+### Production Checklist
+
+- [ ] Change all default passwords and secrets
+- [ ] Configure proper database backups
+- [ ] Set up monitoring and alerting
+- [ ] Configure log aggregation
+- [ ] Enable HTTPS/TLS
+- [ ] Set up CI/CD pipelines
+- [ ] Configure Pulumi ESC environments
+- [ ] Review and adjust resource limits
+- [ ] Set up health checks and readiness probes
+- [ ] Configure network policies
+- [ ] Review security settings
