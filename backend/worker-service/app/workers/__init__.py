@@ -28,12 +28,12 @@ def provision_infrastructure(self, job_id: str, plugin_id: str, version: str, in
 
 
 @celery_app.task(name="destroy_infrastructure", max_retries=0, bind=True)
-def destroy_infrastructure(self, deployment_id: str):
+def destroy_infrastructure(self, deployment_id: str, job_id: str = None):
     """Celery task wrapper for infrastructure destruction"""
     from app.logger import logger
-    logger.info(f"[CELERY TASK] Starting destroy_infrastructure for deployment {deployment_id}")
+    logger.info(f"[CELERY TASK] Starting destroy_infrastructure for deployment {deployment_id} (job {job_id})")
     try:
-        task = infrastructure.InfrastructureDestroyTask(deployment_id)
+        task = infrastructure.InfrastructureDestroyTask(deployment_id, job_id=job_id)
         result = task.execute()
         logger.info(f"[CELERY TASK] destroy_infrastructure completed for deployment {deployment_id}")
         return result
@@ -58,9 +58,9 @@ def provision_microservice(job_id: str, plugin_id: str, version: str, deployment
 
 
 @celery_app.task(name="destroy_microservice")
-def destroy_microservice(deployment_id: str):
+def destroy_microservice(deployment_id: str, job_id: str = None):
     """Celery task wrapper for microservice destruction"""
-    task = microservice.MicroserviceDestroyTask(deployment_id)
+    task = microservice.MicroserviceDestroyTask(deployment_id, job_id=job_id)
     return task.execute()
 
 

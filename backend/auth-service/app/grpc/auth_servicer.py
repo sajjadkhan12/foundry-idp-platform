@@ -19,6 +19,10 @@ class AuthenticationServicer(auth_pb2_grpc.AuthenticationServiceServicer):
     
     async def Login(self, request: auth_pb2.LoginRequest, context: grpc.ServicerContext) -> auth_pb2.TokenResponse:
         """Handle login request"""
+        import logging
+        import traceback
+        logger = logging.getLogger(__name__)
+        
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
@@ -46,6 +50,8 @@ class AuthenticationServicer(auth_pb2_grpc.AuthenticationServiceServicer):
                 context.set_details(str(e))
                 return auth_pb2.TokenResponse()
             except Exception as e:
+                logger.error(f"Login error for identifier '{request.identifier}': {str(e)}", exc_info=True)
+                logger.error(f"Full traceback:\n{traceback.format_exc()}")
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(f"Internal error: {str(e)}")
                 return auth_pb2.TokenResponse()

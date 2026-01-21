@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Terminal, ArrowLeft, Package, Tag, Globe, Clock, Trash2, ExternalLink, Copy, Check, AlertCircle, Loader2, RotateCw, Github, Code, Edit2, X, History, Undo2 } from 'lucide-react';
+import { Terminal, ArrowLeft, Package, Tag, Globe, Clock, Trash2, ExternalLink, Copy, Check, AlertCircle, Loader2, RotateCw, Edit2, X, History, Undo2 } from 'lucide-react';
 import api from '../services/api';
 import { StatusBadge } from '../components/Badges';
 import { EnvironmentBadge } from '../components/EnvironmentBadge';
 import { useNotification } from '../contexts/NotificationContext';
 import { appLogger } from '../utils/logger';
-import { CICDStatus } from '../components/CICDStatus';
 import { useAuth } from '../contexts/AuthContext';
 import { BusinessUnitWarningModal } from '../components/BusinessUnitWarningModal';
 
@@ -27,8 +26,6 @@ export const DeploymentStatusPage: React.FC = () => {
     const [isRetrying, setIsRetrying] = useState(false);
     const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
     const [autoPollInterval, setAutoPollInterval] = useState<NodeJS.Timeout | null>(null);
-    const [repositoryInfo, setRepositoryInfo] = useState<any>(null);
-    const [loadingRepo, setLoadingRepo] = useState(false);
     const [showUpdateModal, setShowUpdateModal] = useState(false);
     const [isUpdating, setIsUpdating] = useState(false);
     const [updateInputs, setUpdateInputs] = useState<Record<string, any>>({});
@@ -41,7 +38,7 @@ export const DeploymentStatusPage: React.FC = () => {
     const [selectedConfig, setSelectedConfig] = useState<{ inputs: Record<string, any>; version: number } | null>(null);
     const [businessUnitName, setBusinessUnitName] = useState<string | null>(null);
     const [forceUpdating, setForceUpdating] = useState(false); // local flag to show updating badge immediately
-    
+
     // Helper function to format created_by (handles both email and UUID)
     const formatCreatedBy = (createdBy: string | undefined): string => {
         if (!createdBy) return 'Unknown';
@@ -63,7 +60,7 @@ export const DeploymentStatusPage: React.FC = () => {
             if (isLoadingBusinessUnits) {
                 return;
             }
-            
+
             // Check if business unit is selected (admins can bypass)
             // Use isAdmin from context (permission-based, no hardcoded role checks)
             const userIsAdmin = isAdmin;
@@ -75,28 +72,28 @@ export const DeploymentStatusPage: React.FC = () => {
             fetchDeploymentHistory();
         }
     }, [id, activeBusinessUnit, hasBusinessUnitAccess, isAdmin, isLoadingBusinessUnits]);
-    
+
     const fetchDeploymentHistory = async () => {
         if (!id) return;
         try {
             setLoadingHistory(true);
             const response = await api.deploymentsApi.getDeploymentHistory(id);
-            
+
             // Handle different response formats
             let historyArray: DeploymentHistory[] = [];
             if (response) {
                 if (Array.isArray(response)) {
                     // If response is directly an array
                     historyArray = response;
-                } else if (response.history && Array.isArray(response.history)) {
+                } else if ((response as any).history && Array.isArray((response as any).history)) {
                     // If response has a history property
-                    historyArray = response.history;
-                } else if (response.data && Array.isArray(response.data)) {
+                    historyArray = (response as any).history;
+                } else if ((response as any).data && Array.isArray((response as any).data)) {
                     // If response has a data property
-                    historyArray = response.data;
+                    historyArray = (response as any).data;
                 }
             }
-            
+
             setDeploymentHistory(historyArray);
         } catch (err: any) {
             appLogger.error('Failed to fetch deployment history:', err);
@@ -106,14 +103,14 @@ export const DeploymentStatusPage: React.FC = () => {
             setLoadingHistory(false);
         }
     };
-    
+
     // Load plugin manifest when deployment is loaded and we need to show update modal
     useEffect(() => {
         if (deployment && deployment.plugin_id && deployment.version) {
             loadPluginManifest();
         }
     }, [deployment?.plugin_id, deployment?.version]);
-    
+
     const loadPluginManifest = async () => {
         if (!deployment) return;
         try {
@@ -133,39 +130,18 @@ export const DeploymentStatusPage: React.FC = () => {
             setLoadingManifest(false);
         }
     };
-    
-    // Fetch repository info for microservices
-    useEffect(() => {
-        if (deployment?.deployment_type === 'microservice' && deployment.github_repo_name) {
-            fetchRepositoryInfo();
-        }
-    }, [deployment?.id, deployment?.deployment_type, deployment?.github_repo_name]);
-    
-    const fetchRepositoryInfo = async () => {
-        if (!deployment?.id) return;
-        try {
-            setLoadingRepo(true);
-            const info = await api.deploymentsApi.getRepositoryInfo(deployment.id);
-            setRepositoryInfo(info);
-        } catch (err: any) {
-            // Repository might not be created yet, that's okay
-            if (err.message && !err.message.includes('not yet created')) {
-                appLogger.error('Failed to fetch repository info:', err);
-            }
-        } finally {
-            setLoadingRepo(false);
-        }
-    };
-    
+
+
+
     // Auto-poll when deployment is provisioning, deleting, or updating (separate from retry polling)
     useEffect(() => {
         // Poll for updates when status is provisioning, deleting, or when update_status is updating
         const shouldPoll = deployment && (
-            deployment.status === 'provisioning' || 
-            deployment.status === 'deleting' || 
+            deployment.status === 'provisioning' ||
+            deployment.status === 'deleting' ||
             deployment.update_status === 'updating'
         );
-        
+
         if (!shouldPoll || isRetrying) {
             // Clear auto-polling if not in a state that needs polling or if retry is active
             if (autoPollInterval) {
@@ -174,28 +150,28 @@ export const DeploymentStatusPage: React.FC = () => {
             }
             return;
         }
-        
+
         // Start polling every 2 seconds for provisioning/deleting/updating deployments
         const interval = setInterval(async () => {
             try {
                 const updated = await api.getDeployment(deployment.id);
                 setDeployment(updated);
-                
+
                 // Keep local updating flag in sync with backend
                 if (updated.update_status === 'updating') {
                     setForceUpdating(true);
                 } else {
                     setForceUpdating(false);
                 }
-                
+
                 // Also refresh history when update completes
                 if (updated.update_status === 'update_succeeded' || updated.update_status === 'update_failed') {
                     fetchDeploymentHistory();
                 }
-                
+
                 // Stop polling if deployment is no longer in a state that needs polling
-                if (updated.status !== 'provisioning' && 
-                    updated.status !== 'deleting' && 
+                if (updated.status !== 'provisioning' &&
+                    updated.status !== 'deleting' &&
                     updated.update_status !== 'updating') {
                     clearInterval(interval);
                     setAutoPollInterval(null);
@@ -205,15 +181,15 @@ export const DeploymentStatusPage: React.FC = () => {
                 appLogger.error('Error polling deployment status:', err);
             }
         }, 2000);
-        
+
         setAutoPollInterval(interval);
-        
+
         // Cleanup on unmount or when dependencies change
         return () => {
             clearInterval(interval);
         };
     }, [deployment?.id, deployment?.status, deployment?.update_status, isRetrying]);
-    
+
     // Cleanup all polling intervals on unmount
     useEffect(() => {
         return () => {
@@ -230,7 +206,7 @@ export const DeploymentStatusPage: React.FC = () => {
         try {
             const data = await api.getDeployment(id!);
             setDeployment(data);
-            
+
             // Resolve business unit label (prefer slug, then name, then tag, then id)
             let buLabel: string | null = null;
             const buTag = data.tags?.find(tag => tag && tag.key === 'business_unit');
@@ -270,13 +246,13 @@ export const DeploymentStatusPage: React.FC = () => {
             });
             addNotification('info', 'Deletion started. The deployment will be removed once the infrastructure is destroyed.');
             setShowDeleteModal(false);
-            
+
             // Poll for status updates (similar to provisioning)
             const interval = setInterval(async () => {
                 try {
                     const updated = await api.getDeployment(deployment!.id);
                     setDeployment(updated);
-                    
+
                     // Stop polling if deployment is deleted or failed
                     if (updated.status === 'deleted' || updated.status === 'failed') {
                         clearInterval(interval);
@@ -293,7 +269,7 @@ export const DeploymentStatusPage: React.FC = () => {
                     setIsDeleting(false);
                 }
             }, 2000); // Poll every 2 seconds
-            
+
             setPollInterval(interval);
         } catch (err: any) {
             appLogger.error('Delete deployment error:', err);
@@ -305,20 +281,20 @@ export const DeploymentStatusPage: React.FC = () => {
 
     const handleRetry = async () => {
         if (!deployment) return;
-        
+
         setIsRetrying(true);
         try {
             // Retry the same deployment/job
             await api.retryDeployment(deployment.id);
-            
+
             addNotification('success', 'Deployment retry initiated. Refreshing status...');
-            
+
             // Update deployment status to provisioning
             setDeployment({
                 ...deployment,
                 status: 'provisioning'
             });
-            
+
             // Poll for updates every 2 seconds
             const interval = setInterval(async () => {
                 try {
@@ -329,7 +305,7 @@ export const DeploymentStatusPage: React.FC = () => {
                     } else {
                         setForceUpdating(false);
                     }
-                    
+
                     // Stop polling if deployment is no longer provisioning
                     if (updated.status !== 'provisioning' && updated.status !== 'failed' && updated.status !== 'deleting') {
                         clearInterval(interval);
@@ -346,16 +322,16 @@ export const DeploymentStatusPage: React.FC = () => {
                     appLogger.error('Error polling deployment status:', err);
                 }
             }, 2000);
-            
+
             setPollInterval(interval);
-            
+
             // Clean up polling after 5 minutes max
             setTimeout(() => {
                 clearInterval(interval);
                 setPollInterval(null);
                 setIsRetrying(false);
             }, 5 * 60 * 1000);
-            
+
         } catch (err: any) {
             addNotification('error', err.message || 'Failed to retry deployment');
             setIsRetrying(false);
@@ -364,7 +340,7 @@ export const DeploymentStatusPage: React.FC = () => {
 
     const handleUpdate = async () => {
         if (!deployment) return;
-        
+
         setIsUpdating(true);
         // Optimistically show updating badge immediately
         setForceUpdating(true);
@@ -373,17 +349,17 @@ export const DeploymentStatusPage: React.FC = () => {
             await api.deploymentsApi.updateDeployment(deployment.id, {
                 inputs: updateInputs
             });
-            
+
             addNotification('success', 'Deployment update initiated. The deployment will be updated with new configuration.');
             setShowUpdateModal(false);
-            
+
             // Refresh deployment to show updating status
             const updated = await api.getDeployment(deployment.id);
             setDeployment(updated);
             if (updated.update_status !== 'updating') {
                 setForceUpdating(false);
             }
-            
+
             // Poll for update completion
             const interval = setInterval(async () => {
                 try {
@@ -394,7 +370,7 @@ export const DeploymentStatusPage: React.FC = () => {
                     } else {
                         setForceUpdating(false);
                     }
-                    
+
                     // Stop polling if update is complete (succeeded or failed)
                     if (updated.update_status === 'update_succeeded' || updated.update_status === 'update_failed') {
                         clearInterval(interval);
@@ -408,13 +384,13 @@ export const DeploymentStatusPage: React.FC = () => {
                     appLogger.error('Error polling deployment update status:', err);
                 }
             }, 2000);
-            
+
             // Clean up polling after 5 minutes max
             setTimeout(() => {
                 clearInterval(interval);
                 setForceUpdating(false);
             }, 5 * 60 * 1000);
-            
+
         } catch (err: any) {
             addNotification('error', err.message || 'Failed to update deployment');
         } finally {
@@ -433,7 +409,7 @@ export const DeploymentStatusPage: React.FC = () => {
     const getTimeAgo = (date: Date): string => {
         const now = new Date();
         const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-        
+
         if (diffInSeconds < 60) return 'Just now';
         if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} minutes ago`;
         if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`;
@@ -446,26 +422,26 @@ export const DeploymentStatusPage: React.FC = () => {
         if (!deployment || !window.confirm(`Are you sure you want to rollback to version ${versionNumber}? This will update the deployment with the configuration from that version.`)) {
             return;
         }
-        
+
         setIsRollingBack(true);
         try {
             await api.deploymentsApi.rollbackDeployment(deployment.id, versionNumber);
-            
+
             addNotification('success', `Rollback to version ${versionNumber} initiated. The deployment will be updated with the previous configuration.`);
-            
+
             // Refresh deployment to show updating status
             const updated = await api.getDeployment(deployment.id);
             setDeployment(updated);
-            
+
             // Refresh history
             await fetchDeploymentHistory();
-            
+
             // Poll for update completion
             const interval = setInterval(async () => {
                 try {
                     const updated = await api.getDeployment(deployment.id);
                     setDeployment(updated);
-                    
+
                     // Stop polling if update is complete (succeeded or failed)
                     if (updated.update_status === 'update_succeeded' || updated.update_status === 'update_failed') {
                         clearInterval(interval);
@@ -480,12 +456,12 @@ export const DeploymentStatusPage: React.FC = () => {
                     appLogger.error('Error polling deployment rollback status:', err);
                 }
             }, 2000);
-            
+
             // Clean up polling after 5 minutes max
             setTimeout(() => {
                 clearInterval(interval);
             }, 5 * 60 * 1000);
-            
+
         } catch (err: any) {
             addNotification('error', err.message || 'Failed to rollback deployment');
         } finally {
@@ -536,8 +512,8 @@ export const DeploymentStatusPage: React.FC = () => {
                             <Package className="w-7 h-7 text-white" />
                         </div>
                         <div className="flex-1">
-                            <div className="flex items-center justify-between mb-3">
-                                <div className="flex items-center gap-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
+                                <div className="flex flex-wrap items-center gap-3">
                                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
                                         {deployment.name || 'Unnamed Deployment'}
                                     </h1>
@@ -547,9 +523,9 @@ export const DeploymentStatusPage: React.FC = () => {
                                 </div>
                                 {/* Status Badge in top corner */}
                                 <div className="flex items-center gap-2">
-                                    <StatusBadge 
-                                        status={deployment.update_status === 'updating' ? 'updating' : deployment.status} 
-                                        size="lg" 
+                                    <StatusBadge
+                                        status={deployment.update_status === 'updating' ? 'updating' : deployment.status}
+                                        size="lg"
                                     />
                                     {deployment.update_status === 'update_failed' && (
                                         <div className="relative group">
@@ -566,7 +542,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                     )}
                                 </div>
                             </div>
-                            
+
                             {/* Metadata row */}
                             <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600 dark:text-gray-400 mb-4">
                                 {deployment.cloud_provider && (
@@ -581,6 +557,34 @@ export const DeploymentStatusPage: React.FC = () => {
                                 {deployment.stack_name && (
                                     <span className="text-gray-500 dark:text-gray-500 font-mono text-xs">{deployment.stack_name}</span>
                                 )}
+                                {deployment.user_email && (
+                                    <>
+                                        <span className="text-gray-400 dark:text-gray-500">•</span>
+                                        <span className="text-gray-500 dark:text-gray-500 font-mono text-xs" title={`Created by ${deployment.user_name || 'Unknown'}`}>
+                                            Owner: {deployment.user_email}
+                                        </span>
+                                    </>
+                                )}
+                                {deployment.pulumi_stack_name && (
+                                    <>
+                                        <span className="text-gray-400 dark:text-gray-500">•</span>
+                                        <span className="text-gray-500 dark:text-gray-500 font-mono text-xs" title="Pulumi Stack for Microservice Infrastructure">
+                                            Stack: {deployment.pulumi_stack_name}
+                                        </span>
+                                    </>
+                                )}
+                                {deployment.infrastructure_deployment_id && (
+                                    <>
+                                        <span className="text-gray-400 dark:text-gray-500">•</span>
+                                        <Link
+                                            to={`/deployment/${deployment.infrastructure_deployment_id}`}
+                                            className="text-orange-600 dark:text-orange-400 hover:text-orange-500 transition-colors font-bold text-[10px] uppercase tracking-wider flex items-center gap-1 bg-orange-500/5 px-2 py-0.5 rounded-full border border-orange-500/20"
+                                        >
+                                            Base Infra
+                                            <ExternalLink className="w-2.5 h-2.5" />
+                                        </Link>
+                                    </>
+                                )}
                                 {/* Always show job ID if available - prefer last_update_job_id, then job_id */}
                                 {(deployment.last_update_job_id || deployment.job_id) ? (
                                     <>
@@ -591,7 +595,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                     </>
                                 ) : null}
                             </div>
-                            
+
                             {/* Tags Section */}
                             {(() => {
                                 // Build tag list and ensure business_unit shows the resolved label
@@ -609,7 +613,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                         allTags.push({ key: 'business_unit', value: businessUnitName });
                                     }
                                 }
-                                
+
                                 return allTags.length > 0 ? (
                                     <div className="flex flex-wrap gap-2 mb-4">
                                         {allTags.filter(tag => tag && tag.key).map((tag, idx) => (
@@ -627,11 +631,11 @@ export const DeploymentStatusPage: React.FC = () => {
                             })()}
                         </div>
                     </div>
-                    
+
                     {/* Actions Row */}
                     <div className="flex items-center justify-end pt-4 border-t border-gray-200 dark:border-gray-800">
                         {/* Action Buttons */}
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center justify-end gap-3 w-full sm:w-auto">
                             {deployment.status === 'active' && deployment.deployment_type === 'infrastructure' && (
                                 <button
                                     onClick={() => setShowUpdateModal(true)}
@@ -702,9 +706,9 @@ export const DeploymentStatusPage: React.FC = () => {
                                 <p className="text-sm">No deployment history available</p>
                             </div>
                         ) : (
-                            <div 
+                            <div
                                 className="overflow-y-auto space-y-4"
-                                style={{ 
+                                style={{
                                     height: '180px',
                                     scrollbarWidth: 'none', /* Firefox */
                                     msOverflowStyle: 'none', /* IE and Edge */
@@ -720,23 +724,23 @@ export const DeploymentStatusPage: React.FC = () => {
                                     const sortedHistory = [...deploymentHistory]
                                         .filter(entry => entry && entry.id)
                                         .sort((a, b) => (b.version_number || 0) - (a.version_number || 0));
-                                    
+
                                     // Only the latest version (first in sorted list) should be active
                                     const latestVersionNumber = sortedHistory.length > 0 ? sortedHistory[0].version_number : null;
-                                    
+
                                     return sortedHistory.map((entry) => {
                                         // Only mark as active if it's the latest version AND deployment is active
-                                        const isActive = entry.version_number === latestVersionNumber && 
-                                                         deployment.status === 'active';
-                                        const isUpdating = entry.version_number === latestVersionNumber && 
-                                                          deployment.update_status === 'updating';
+                                        const isActive = entry.version_number === latestVersionNumber &&
+                                            deployment.status === 'active';
+                                        const isUpdating = entry.version_number === latestVersionNumber &&
+                                            deployment.update_status === 'updating';
                                         const timeAgo = entry.created_at ? getTimeAgo(new Date(entry.created_at)) : '';
                                         // Determine status: failed > updating (only latest) > active (only latest) > stopped
                                         // Handle 'superseded' status from backend as 'stopped'
-                                        const entryStatus = entry.status === 'failed' ? 'failed' : 
-                                                          (isUpdating ? 'updating' : 
-                                                          (isActive ? 'active' : 'stopped'));
-                                        
+                                        const entryStatus = entry.status === 'failed' ? 'failed' :
+                                            (isUpdating ? 'updating' :
+                                                (isActive ? 'active' : 'stopped'));
+
                                         return (
                                             <div
                                                 key={entry.id}
@@ -795,116 +799,41 @@ export const DeploymentStatusPage: React.FC = () => {
                 )}
             </div>
 
-            {/* Microservice-specific sections */}
-            {deployment.deployment_type === 'microservice' && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* CI/CD Status Card */}
-                    {deployment.github_repo_name && (
-                        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-6 transition-colors">
-                            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
-                                <Code className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                                CI/CD Status
-                            </h3>
-                            <CICDStatus 
-                                deploymentId={deployment.id}
-                                autoRefresh={true}
-                                refreshInterval={15000}
-                            />
+            {/* Microservice-specific sections REMOVED */}
+
+
+
+            {/* Cost Overview Card */}
+            {deployment && deployment.status !== 'deleted' && (
+                <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-2xl p-6 text-white shadow-lg shadow-green-500/20">
+                    <h3 className="font-semibold mb-2 flex items-center gap-2">
+                        <Globe className="w-5 h-5" />
+                        Cost Overview
+                    </h3>
+                    <p className="text-green-100 text-sm mb-4">
+                        Estimated monthly infrastructure cost
+                    </p>
+                    <div className="text-3xl font-bold mb-1">
+                        {(deployment as any).estimated_monthly_cost
+                            ? `~$${parseFloat((deployment as any).estimated_monthly_cost).toFixed(2)}`
+                            : '$0.00'}
+                        <span className="text-sm font-normal text-green-200">
+                            {' '}USD / month
+                        </span>
+                    </div>
+                    {(deployment as any).actual_monthly_cost && (
+                        <div className="mt-3 pt-3 border-t border-green-400/30">
+                            <p className="text-xs text-green-200 mb-1">Actual (Last Month):</p>
+                            <span className="font-semibold">
+                                ${parseFloat((deployment as any).actual_monthly_cost).toFixed(2)}
+                            </span>
                         </div>
                     )}
-                    
-                    {/* Repository Info Card */}
-                    {deployment.github_repo_name && (
-                        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-6 transition-colors">
-                            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
-                                <Github className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-                                Repository
-                            </h3>
-                            {loadingRepo ? (
-                                <div className="flex items-center justify-center py-8">
-                                    <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-                                </div>
-                            ) : repositoryInfo ? (
-                                <div className="space-y-3">
-                                    <div>
-                                        <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-1 block">Repository Name</span>
-                                        <div className="flex items-center gap-2 group">
-                                            <a
-                                                href={repositoryInfo.html_url}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="text-gray-900 dark:text-gray-100 font-medium hover:text-orange-600 dark:hover:text-orange-400 transition-colors flex items-center gap-2"
-                                            >
-                                                {repositoryInfo.full_name}
-                                                <ExternalLink className="w-4 h-4" />
-                                            </a>
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-1 block">Clone URL (HTTPS)</span>
-                                        <div className="flex items-center gap-2 group">
-                                            <span className="text-gray-900 dark:text-gray-100 font-mono text-sm break-all flex-1">
-                                                {repositoryInfo.clone_url}
-                                            </span>
-                                            <button
-                                                onClick={() => copyToClipboard(repositoryInfo.clone_url, 'clone_url')}
-                                                className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-                                                title="Copy to clipboard"
-                                            >
-                                                {copiedField === 'clone_url' ? (
-                                                    <Check className="w-4 h-4 text-green-600" />
-                                                ) : (
-                                                    <Copy className="w-4 h-4 text-gray-400" />
-                                                )}
-                                            </button>
-                                        </div>
-                                    </div>
-                                    {repositoryInfo.ssh_url && (
-                                        <div>
-                                            <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-1 block">Clone URL (SSH)</span>
-                                            <div className="flex items-center gap-2 group">
-                                                <span className="text-gray-900 dark:text-gray-100 font-mono text-sm break-all flex-1">
-                                                    {repositoryInfo.ssh_url}
-                                                </span>
-                                                <button
-                                                    onClick={() => copyToClipboard(repositoryInfo.ssh_url, 'ssh_url')}
-                                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-                                                    title="Copy to clipboard"
-                                                >
-                                                    {copiedField === 'ssh_url' ? (
-                                                        <Check className="w-4 h-4 text-green-600" />
-                                                    ) : (
-                                                        <Copy className="w-4 h-4 text-gray-400" />
-                                                    )}
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    <div>
-                                        <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-1 block">Default Branch</span>
-                                        <span className="text-gray-900 dark:text-gray-100 font-mono text-sm">
-                                            {repositoryInfo.default_branch}
-                                        </span>
-                                    </div>
-                                    {repositoryInfo.description && (
-                                        <div>
-                                            <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide mb-1 block">Description</span>
-                                            <span className="text-gray-900 dark:text-gray-100 text-sm">
-                                                {repositoryInfo.description}
-                                            </span>
-                                        </div>
-                                    )}
-                                </div>
-                            ) : (
-                                <div className="text-sm text-gray-500 dark:text-gray-400">
-                                    Repository information not available yet.
-                                </div>
-                            )}
-                        </div>
-                    )}
+                    <p className="text-xs text-green-200 mt-3">
+                        *Costs are estimates based on provisioned resources
+                    </p>
                 </div>
             )}
-
 
             {/* Configuration Inputs and Deployment Outputs */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -980,7 +909,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                 <X className="w-6 h-6" />
                             </button>
                         </div>
-                        
+
                         {loadingManifest ? (
                             <div className="flex items-center justify-center py-8">
                                 <Loader2 className="w-8 h-8 text-orange-600 dark:text-orange-400 animate-spin" />
@@ -990,14 +919,14 @@ export const DeploymentStatusPage: React.FC = () => {
                                 {Object.entries(pluginManifest.inputs.properties).filter(([key, prop]: [string, any]) => prop != null).map(([key, prop]: [string, any]) => {
                                     const isRequired = pluginManifest.inputs.required?.includes(key);
                                     const currentValue = updateInputs[key] ?? prop.default ?? '';
-                                    
+
                                     return (
                                         <div key={key} className="space-y-2">
                                             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                                                 {prop.title || key.replace(/_/g, ' ')}
                                                 {isRequired && <span className="text-red-500 ml-1">*</span>}
                                             </label>
-                                            
+
                                             {prop.type === 'boolean' ? (
                                                 <label className="flex items-center gap-2 cursor-pointer">
                                                     <input
@@ -1037,7 +966,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
                                                 />
                                             )}
-                                            
+
                                             {prop.description && (
                                                 <p className="text-xs text-gray-500 dark:text-gray-400">
                                                     {prop.description}
@@ -1053,7 +982,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                 <p>Unable to load plugin manifest. Please try again later.</p>
                             </div>
                         )}
-                        
+
                         <div className="flex justify-end gap-3 mt-6 pt-6 border-t border-gray-200 dark:border-gray-800">
                             <button
                                 onClick={() => setShowUpdateModal(false)}
@@ -1103,7 +1032,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                 <X className="w-6 h-6" />
                             </button>
                         </div>
-                        
+
                         <div className="flex-1 overflow-y-auto pr-2">
                             <div className="space-y-4">
                                 {selectedConfig.inputs && Object.entries(selectedConfig.inputs).map(([key, value]) => (
@@ -1134,7 +1063,7 @@ export const DeploymentStatusPage: React.FC = () => {
                                 ))}
                             </div>
                         </div>
-                        
+
                         <div className="flex justify-end gap-3 mt-6 pt-6 border-t border-gray-200 dark:border-gray-800">
                             <button
                                 onClick={() => {

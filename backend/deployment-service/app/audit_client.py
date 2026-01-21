@@ -29,7 +29,8 @@ class AuditClient:
         ip_address: Optional[str] = None,
         status: str = "success",
         error_message: Optional[str] = None,
-        business_unit_id: Optional[str] = None
+        business_unit_id: Optional[str] = None,
+        token: Optional[str] = None
     ) -> bool:
         """Log an activity to the audit service"""
         try:
@@ -60,10 +61,15 @@ class AuditClient:
             if business_unit_id:
                 payload["business_unit_id"] = str(business_unit_id)
             
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
                     f"{self.base_url}/api/v1/audit-logs",
-                    json=payload
+                    json=payload,
+                    headers=headers
                 )
                 
                 if response.status_code == 201:

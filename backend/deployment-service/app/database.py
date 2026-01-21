@@ -25,9 +25,9 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def get_db() -> AsyncSession:
-    """Get database session"""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+    """Get database session - FastAPI dependency"""
+    session = AsyncSessionLocal()
+    try:
+        yield session
+    finally:
+        await session.close()

@@ -137,7 +137,16 @@ async def verify_token(authorization: Optional[str] = Header(None)) -> Dict:
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
     
-    token = authorization.replace("Bearer ", "")
+    token = None
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+        else:
+            token = authorization.replace("Bearer ", "").replace("bearer ", "")
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
     
     try:
         async with httpx.AsyncClient() as client:
@@ -237,10 +246,16 @@ async def create_audit_log(
     """Create a new audit log entry"""
     async with AsyncSessionLocal() as db:
         try:
+            # Enrich request with user_info from token if missing
+            req_user_id = request.user_id or user_info.get("user_id")
+            req_user_email = request.user_email or user_info.get("email")
+            req_user_name = request.user_name or user_info.get("username")
+            req_organization_id = request.organization_id or user_info.get("organization_id")
+
             audit_log = AuditLog(
-                user_id=uuid.UUID(request.user_id) if request.user_id else None,
-                user_email=request.user_email,
-                user_name=request.user_name,
+                user_id=uuid.UUID(req_user_id) if req_user_id else None,
+                user_email=req_user_email,
+                user_name=req_user_name,
                 action=request.action,
                 resource_type=request.resource_type,
                 resource_id=request.resource_id,
@@ -251,7 +266,7 @@ async def create_audit_log(
                 status=request.status,
                 error_message=request.error_message,
                 business_unit_id=uuid.UUID(request.business_unit_id) if request.business_unit_id else None,
-                organization_id=uuid.UUID(request.organization_id) if request.organization_id else None,
+                organization_id=uuid.UUID(req_organization_id) if req_organization_id else None,
                 service_name=request.service_name,
                 correlation_id=uuid.UUID(request.correlation_id) if request.correlation_id else None,
                 duration_ms=request.duration_ms

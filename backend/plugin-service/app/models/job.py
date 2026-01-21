@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, foreign
 from sqlalchemy.ext.declarative import declarative_base
 import enum
+import uuid
 
 Base = declarative_base()
 
@@ -26,6 +27,7 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     plugin_version_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)  # No FK
     deployment_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)  # UUID stored as string
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)  # Foreign key to organizations table (exists in DB but not in this service's models)
     status: Mapped[str] = mapped_column(String, default=JobStatus.PENDING.value)  # Store as string, will be cast to enum in DB
     triggered_by: Mapped[str] = mapped_column(String, nullable=False)
     inputs: Mapped[dict] = mapped_column(JSON, default={})

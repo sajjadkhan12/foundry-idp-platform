@@ -5,6 +5,7 @@ from app.models.credential import CloudCredential, CloudProvider
 from app.services.crypto import crypto_service
 from typing import Optional, Dict, List
 import json
+import uuid
 
 
 class CredentialService:
@@ -15,6 +16,7 @@ class CredentialService:
         name: str,
         provider: str,
         credentials: str,  # JSON string
+        organization_id: str,
         db: AsyncSession
     ) -> Dict:
         """Create or update a cloud credential"""
@@ -24,15 +26,24 @@ class CredentialService:
         except ValueError:
             raise ValueError(f"Invalid provider. Must be one of: {', '.join([p.value for p in CloudProvider])}")
         
+        # Validate organization_id
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError("Invalid organization ID")
+        
         # Parse and validate credentials JSON
         try:
             creds_dict = json.loads(credentials)
         except json.JSONDecodeError:
             raise ValueError("Invalid JSON in credentials")
         
-        # Check if credential with this name exists
+        # Check if credential with this name exists in this organization
         result = await db.execute(
-            select(CloudCredential).where(CloudCredential.name == name)
+            select(CloudCredential).where(
+                CloudCredential.name == name,
+                CloudCredential.organization_id == org_uuid
+            )
         )
         existing = result.scalar_one_or_none()
         
@@ -50,7 +61,8 @@ class CredentialService:
             existing = CloudCredential(
                 name=name,
                 provider=provider_enum,
-                encrypted_data=encrypted_data
+                encrypted_data=encrypted_data,
+                organization_id=org_uuid
             )
             db.add(existing)
             await db.commit()
@@ -60,6 +72,7 @@ class CredentialService:
             "id": existing.id,
             "name": existing.name,
             "provider": existing.provider.value,
+            "organization_id": str(existing.organization_id),
             "created_at": existing.created_at.isoformat(),
             "updated_at": existing.updated_at.isoformat()
         }
@@ -69,11 +82,20 @@ class CredentialService:
         credential_id: int,
         name: Optional[str],
         credentials: Optional[str],  # JSON string
+        organization_id: str,
         db: AsyncSession
     ) -> Dict:
         """Update a cloud credential"""
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError("Invalid organization ID")
+        
         result = await db.execute(
-            select(CloudCredential).where(CloudCredential.id == credential_id)
+            select(CloudCredential).where(
+                CloudCredential.id == credential_id,
+                CloudCredential.organization_id == org_uuid
+            )
         )
         credential = result.scalar_one_or_none()
         
@@ -82,10 +104,12 @@ class CredentialService:
         
         # Update fields
         if name is not None:
-            # Check if name is taken by another credential
+            # Check if name is taken by another credential in the same organization
             result = await db.execute(
                 select(CloudCredential).where(
-                    (CloudCredential.name == name) & (CloudCredential.id != credential_id)
+                    (CloudCredential.name == name) & 
+                    (CloudCredential.id != credential_id) &
+                    (CloudCredential.organization_id == org_uuid)
                 )
             )
             if result.scalar_one_or_none():
@@ -109,6 +133,7 @@ class CredentialService:
             "id": credential.id,
             "name": credential.name,
             "provider": credential.provider.value,
+            "organization_id": str(credential.organization_id),
             "created_at": credential.created_at.isoformat(),
             "updated_at": credential.updated_at.isoformat()
         }
@@ -116,11 +141,20 @@ class CredentialService:
     async def delete_credential(
         self,
         credential_id: int,
+        organization_id: str,
         db: AsyncSession
     ) -> None:
         """Delete a cloud credential"""
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError("Invalid organization ID")
+        
         result = await db.execute(
-            select(CloudCredential).where(CloudCredential.id == credential_id)
+            select(CloudCredential).where(
+                CloudCredential.id == credential_id,
+                CloudCredential.organization_id == org_uuid
+            )
         )
         credential = result.scalar_one_or_none()
         
@@ -133,11 +167,20 @@ class CredentialService:
     async def get_credential(
         self,
         credential_id: int,
+        organization_id: str,
         db: AsyncSession
     ) -> Dict:
         """Get a cloud credential by ID (without decrypted data)"""
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError("Invalid organization ID")
+        
         result = await db.execute(
-            select(CloudCredential).where(CloudCredential.id == credential_id)
+            select(CloudCredential).where(
+                CloudCredential.id == credential_id,
+                CloudCredential.organization_id == org_uuid
+            )
         )
         credential = result.scalar_one_or_none()
         
@@ -148,16 +191,25 @@ class CredentialService:
             "id": credential.id,
             "name": credential.name,
             "provider": credential.provider.value,
+            "organization_id": str(credential.organization_id),
             "created_at": credential.created_at.isoformat(),
             "updated_at": credential.updated_at.isoformat()
         }
     
     async def list_credentials(
         self,
+        organization_id: str,
         db: AsyncSession
     ) -> List[Dict]:
-        """List all credentials (without decrypted data)"""
-        result = await db.execute(select(CloudCredential))
+        """List all credentials for an organization (without decrypted data)"""
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError("Invalid organization ID")
+        
+        result = await db.execute(
+            select(CloudCredential).where(CloudCredential.organization_id == org_uuid)
+        )
         credentials = result.scalars().all()
         
         return [
@@ -165,6 +217,7 @@ class CredentialService:
                 "id": cred.id,
                 "name": cred.name,
                 "provider": cred.provider.value,
+                "organization_id": str(cred.organization_id),
                 "created_at": cred.created_at.isoformat(),
                 "updated_at": cred.updated_at.isoformat()
             }

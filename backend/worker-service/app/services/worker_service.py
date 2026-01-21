@@ -59,11 +59,11 @@ class WorkerService:
                 "error": str(e)
             }
     
-    async def destroy_infrastructure(self, deployment_id: str) -> Dict[str, Any]:
+    async def destroy_infrastructure(self, deployment_id: str, job_id: Optional[str] = None) -> Dict[str, Any]:
         """Execute infrastructure destruction task via Celery"""
         try:
             from app.workers import destroy_infrastructure as destroy_task
-            task = destroy_task.delay(deployment_id=deployment_id)
+            task = destroy_task.delay(deployment_id=deployment_id, job_id=job_id)
             
             logger.info(f"Queued infrastructure destruction task {task.id} for deployment {deployment_id}")
             
@@ -122,11 +122,11 @@ class WorkerService:
                 "error": str(e)
             }
     
-    async def destroy_microservice(self, deployment_id: str) -> Dict[str, Any]:
+    async def destroy_microservice(self, deployment_id: str, job_id: Optional[str] = None) -> Dict[str, Any]:
         """Execute microservice destruction task via Celery"""
         try:
             from app.workers import destroy_microservice as destroy_task
-            task = destroy_task.delay(deployment_id=deployment_id)
+            task = destroy_task.delay(deployment_id=deployment_id, job_id=job_id)
             
             logger.info(f"Queued microservice destruction task {task.id} for deployment {deployment_id}")
             

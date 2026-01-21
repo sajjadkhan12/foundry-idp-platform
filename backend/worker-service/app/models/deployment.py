@@ -96,6 +96,7 @@ class Deployment(Base):
     
     # Ownership
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     
     # Business Unit
     business_unit_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("business_units.id", ondelete="SET NULL"), nullable=True, index=True)

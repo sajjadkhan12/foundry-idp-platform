@@ -2,6 +2,13 @@
 -- This schema creates all required tables for the application
 -- Note: For Docker, the database is created automatically via POSTGRES_DB
 -- For manual setup, connect to the database first: psql -U postgres -d devplatform_idp
+--
+-- ORGANIZATION ISOLATION:
+-- This schema includes organization_id columns for multi-tenant isolation.
+-- All resources (roles, groups, deployments, jobs, plugins, credentials, etc.) are
+-- isolated by organization to ensure complete data separation between tenants.
+-- System roles (platform-admin, super-admin) have organization_id = NULL.
+-- Organization-specific resources have organization_id set to their organization.
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -79,22 +86,40 @@ CREATE TABLE refresh_tokens (
 );
 
 -- Roles table
+-- Organization isolation: NULL for system roles (platform-admin, super-admin), set for org-specific roles
 CREATE TABLE roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
     description VARCHAR(500),
     is_platform_role BOOLEAN DEFAULT false NOT NULL,
+    -- Organization isolation: NULL for system roles, set for org-specific roles
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Unique constraint for org-specific roles: same role name can exist in different organizations
+CREATE UNIQUE INDEX roles_name_organization_unique 
+ON roles(name, organization_id) 
+WHERE organization_id IS NOT NULL;
+
+-- Unique constraint for system roles: name must be unique when organization_id IS NULL
+CREATE UNIQUE INDEX roles_name_unique_system 
+ON roles(name) 
+WHERE organization_id IS NULL;
+
 -- Groups table
+-- Organization isolation: Groups must belong to an organization
 CREATE TABLE groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
     description VARCHAR(500),
+    -- Organization isolation: Groups must belong to an organization
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Org-scoped unique constraint: same group name can exist in different organizations
+    UNIQUE(name, organization_id)
 );
 
 -- Permissions metadata table
@@ -119,6 +144,7 @@ CREATE TABLE permissions_metadata (
 -- ============================================================================
 
 -- Plugins table
+-- Organization isolation: Each organization manages its own plugins
 CREATE TABLE plugins (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
@@ -126,6 +152,10 @@ CREATE TABLE plugins (
     author VARCHAR,
     is_locked BOOLEAN DEFAULT FALSE NOT NULL,
     deployment_type VARCHAR(50) DEFAULT 'infrastructure' NOT NULL,
+    -- Organization isolation: Each organization manages its own plugins
+    -- Note: No foreign key constraint to avoid cross-service dependencies
+    -- The organization_id is validated at the application level
+    organization_id UUID,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -152,11 +182,15 @@ CREATE TYPE cloud_provider_enum AS ENUM ('aws', 'gcp', 'azure', 'kubernetes');
 
 CREATE TABLE cloud_credentials (
     id SERIAL PRIMARY KEY,
-    name VARCHAR UNIQUE NOT NULL,
+    name VARCHAR NOT NULL,
     provider cloud_provider_enum NOT NULL,
     encrypted_data TEXT NOT NULL,
+    -- Organization isolation: Each organization manages its own credentials
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Org-scoped unique constraint: same credential name can exist in different organizations
+    UNIQUE(organization_id, name)
 );
 
 -- Plugin access control tables
@@ -317,6 +351,9 @@ CREATE TABLE deployments (
     last_update_job_id VARCHAR(255),
     last_update_error TEXT,
     last_update_attempted_at TIMESTAMP WITH TIME ZONE,
+    -- Infrastructure linking
+    pulumi_stack_name VARCHAR(255),
+    infrastructure_deployment_id UUID REFERENCES deployments(id) ON DELETE SET NULL,
     -- Data
     inputs JSONB,
     outputs JSONB,
@@ -324,6 +361,11 @@ CREATE TABLE deployments (
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     -- Business Unit
     business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL,
+    -- Organization isolation: Direct organization filtering for better performance
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL,
+    -- Cost estimation fields
+    estimated_monthly_cost DECIMAL(10, 2),
+    actual_monthly_cost DECIMAL(10, 2),
     -- Metadata
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -354,6 +396,19 @@ CREATE TABLE deployment_history (
     CONSTRAINT uix_deployment_version UNIQUE (deployment_id, version_number)
 );
 
+-- Deployment costs table for historical monthly cost tracking
+CREATE TABLE deployment_costs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    deployment_id UUID NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+    billing_month VARCHAR(7) NOT NULL,  -- Format: YYYY-MM
+    amount DECIMAL(10, 2) NOT NULL,
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    breakdown JSONB,  -- Detailed cost breakdown by resource type
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uix_deployment_billing_month UNIQUE (deployment_id, billing_month)
+);
+
 -- ============================================================================
 -- Job Management Tables
 -- ============================================================================
@@ -373,6 +428,8 @@ CREATE TABLE jobs (
     retry_count INTEGER DEFAULT 0 NOT NULL,
     error_state VARCHAR(255),
     error_message TEXT,
+    -- Organization isolation: Populated from associated deployment
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     finished_at TIMESTAMP WITH TIME ZONE
 );
@@ -399,6 +456,8 @@ CREATE TABLE notifications (
     type VARCHAR DEFAULT 'info',
     is_read BOOLEAN DEFAULT FALSE,
     link VARCHAR,
+    -- Organization isolation: Populated from user who receives the notification
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -415,6 +474,8 @@ CREATE TABLE audit_logs (
     resource_id UUID,
     details JSONB,
     ip_address VARCHAR(45),
+    -- Organization isolation: Populated from user who performed the action
+    organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -440,17 +501,23 @@ CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
 -- Roles indexes
 CREATE INDEX idx_roles_name ON roles(name);
 CREATE INDEX idx_roles_is_platform_role ON roles(is_platform_role);
+CREATE INDEX idx_roles_organization_id ON roles(organization_id);
 
 -- Groups indexes
 CREATE INDEX idx_groups_name ON groups(name);
+CREATE INDEX idx_groups_organization_id ON groups(organization_id);
 
 -- Permissions metadata indexes
 CREATE INDEX idx_permissions_metadata_category ON permissions_metadata(category);
 CREATE INDEX idx_permissions_metadata_resource ON permissions_metadata(resource);
 CREATE INDEX idx_permissions_metadata_slug ON permissions_metadata(slug);
 
+-- Cloud credentials indexes
+CREATE INDEX idx_cloud_credentials_organization_id ON cloud_credentials(organization_id);
+
 -- Plugin indexes
 CREATE INDEX idx_plugin_versions_plugin_id ON plugin_versions(plugin_id);
+CREATE INDEX idx_plugins_organization_id ON plugins(organization_id);
 CREATE INDEX idx_plugin_access_plugin_id ON plugin_access(plugin_id);
 CREATE INDEX idx_plugin_access_user_id ON plugin_access(user_id);
 CREATE INDEX ix_plugin_access_business_unit_id ON plugin_access(business_unit_id);
@@ -465,6 +532,7 @@ CREATE INDEX idx_jobs_deployment_id ON jobs(deployment_id);
 CREATE INDEX idx_jobs_status ON jobs(status);
 CREATE INDEX idx_jobs_triggered_by ON jobs(triggered_by);
 CREATE INDEX idx_jobs_created_at ON jobs(created_at);
+CREATE INDEX idx_jobs_organization_id ON jobs(organization_id);
 -- Composite index for status-based queries with time ordering
 CREATE INDEX idx_jobs_status_created ON jobs(status, created_at DESC);
 
@@ -498,12 +566,13 @@ CREATE INDEX idx_deployments_plugin_id ON deployments(plugin_id);
 CREATE INDEX idx_deployments_created_at ON deployments(created_at);
 CREATE INDEX idx_deployments_environment ON deployments(environment);
 CREATE INDEX idx_deployments_business_unit_id ON deployments(business_unit_id);
+CREATE INDEX idx_deployments_organization_id ON deployments(organization_id);
 -- Composite index for user's deployment list queries (user_id + status + created_at)
 CREATE INDEX idx_deployments_user_status_created ON deployments(user_id, status, created_at DESC);
 -- Index for update status queries (for filtering deployments by update status)
 CREATE INDEX idx_deployments_update_status ON deployments(update_status) WHERE update_status IS NOT NULL;
--- Index for organization filtering with environment and status (conditional - only if organization_id exists)
--- Note: This will be created automatically if the organization_id column exists in deployments table
+-- Composite index for organization filtering with environment and status
+CREATE INDEX idx_deployments_org_env_status ON deployments(organization_id, environment, status) WHERE organization_id IS NOT NULL;
 
 -- Deployment tags indexes
 CREATE INDEX idx_deployment_tags_deployment_id ON deployment_tags(deployment_id);
@@ -517,15 +586,22 @@ CREATE INDEX idx_deployment_history_deployment_id ON deployment_history(deployme
 CREATE INDEX idx_deployment_history_version ON deployment_history(deployment_id, version_number DESC);
 CREATE INDEX idx_deployment_history_created_at ON deployment_history(created_at DESC);
 
+-- Deployment costs indexes
+CREATE INDEX idx_deployment_costs_deployment_id ON deployment_costs(deployment_id);
+CREATE INDEX idx_deployment_costs_billing_month ON deployment_costs(billing_month DESC);
+CREATE INDEX idx_deployment_costs_amount ON deployment_costs(amount DESC);
+
 -- Notification indexes
 CREATE INDEX idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX idx_notifications_is_read ON notifications(is_read);
 CREATE INDEX idx_notifications_created_at ON notifications(created_at);
+CREATE INDEX idx_notifications_organization_id ON notifications(organization_id);
 
 -- Audit log indexes
 CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
 CREATE INDEX idx_audit_logs_created ON audit_logs(created_at);
 CREATE INDEX idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
+CREATE INDEX idx_audit_logs_organization_id ON audit_logs(organization_id);
 -- Composite index for user audit history queries
 CREATE INDEX idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC) WHERE user_id IS NOT NULL;
 
@@ -580,6 +656,33 @@ CREATE INDEX idx_audit_logs_user_created ON audit_logs(user_id, created_at DESC)
 -- The application uses SQLAlchemy ORM which will create tables automatically
 -- if they don't exist when using Base.metadata.create_all()
 -- This schema.sql is provided for reference and manual database setup if needed.
+
+-- ============================================================================
+-- Organization Configurations Table
+-- ============================================================================
+
+-- Organization configurations table (for per-org settings like Pulumi tokens, GitHub tokens, etc.)
+CREATE TABLE IF NOT EXISTS organization_configurations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL,
+    business_unit_id UUID REFERENCES business_units(id) ON DELETE CASCADE,
+    config_key VARCHAR(255) NOT NULL,
+    config_value_encrypted TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(organization_id, business_unit_id, config_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_config_org ON organization_configurations(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_config_bu ON organization_configurations(business_unit_id);
+CREATE INDEX IF NOT EXISTS idx_org_config_key ON organization_configurations(config_key);
+CREATE INDEX IF NOT EXISTS idx_org_config_active ON organization_configurations(is_active) WHERE is_active = TRUE;
+
+-- ============================================================================
+-- Performance Indexes
+-- ============================================================================
 
 -- Performance Indexes:
 -- This schema includes all performance indexes for optimal query performance.

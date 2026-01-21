@@ -49,7 +49,7 @@ def cleanup_stuck_deployments():
         logger.info(f"Checking {len(stuck_deployments)} deployments in PROVISIONING status")
         
         updated_count = 0
-        timeout_threshold = datetime.now(timezone.utc) - timedelta(hours=2)  # 2 hours timeout
+        timeout_threshold = datetime.now(timezone.utc) - timedelta(minutes=30)  # 30 minutes timeout
         
         for deployment in stuck_deployments:
             try:

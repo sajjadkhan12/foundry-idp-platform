@@ -173,12 +173,21 @@ class MockContext:
     def __init__(self):
         self.code = None
         self.details = None
+        self._metadata = {}
     
     def set_code(self, code):
         self.code = code
     
     def set_details(self, details):
         self.details = details
+    
+    def invocation_metadata(self):
+        """Return metadata as list of tuples (gRPC format)"""
+        return [(k, v) for k, v in self._metadata.items()]
+    
+    def set_metadata(self, key, value):
+        """Set metadata value"""
+        self._metadata[key] = value
 
 
 def _get_token_from_header(authorization: Optional[str] = Header(None)) -> Optional[str]:
@@ -198,6 +207,24 @@ async def _get_user_id_from_token(token: Optional[str]) -> Optional[str]:
         response = await auth_servicer.ValidateToken(grpc_request, context)
         if not context.code:
             return response.user_id
+    except:
+        pass
+    return None
+
+
+async def _get_user_info_from_token(token: Optional[str]) -> Optional[dict]:
+    """Extract full user info (including organization_id) from token"""
+    if not token or not PROTO_AVAILABLE:
+        return None
+    try:
+        context = MockContext()
+        grpc_request = auth_pb2.ValidateTokenRequest(token=token)
+        response = await auth_servicer.ValidateToken(grpc_request, context)
+        if not context.code:
+            return {
+                "user_id": response.user_id,
+                "organization_id": response.organization_id if response.organization_id else None
+            }
     except:
         pass
     return None
@@ -524,18 +551,56 @@ async def list_users(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=1000),
     search: Optional[str] = Query(None),
-    role_filter: Optional[str] = Query(None)
+    role_filter: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None)
 ):
-    """List users"""
+    """List users - automatically filtered by current user's organization unless super admin"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Get current user's organization_id from token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    # Get current user to check if super admin
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    organization_id = None
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            if is_super:
+                # Super admins should NOT see organization-specific resources
+                return {
+                    "users": [],
+                    "total": 0,
+                    "skip": skip,
+                    "limit": limit
+                }
+            if not is_super:
+                organization_id = str(current_user.organization_id)
     
     context = MockContext()
     grpc_request = auth_pb2.ListUsersRequest(
         skip=skip,
         limit=limit,
         search=search or "",
-        role_filter=role_filter or ""
+        role_filter=role_filter or "",
+        organization_id=organization_id or ""
     )
     response = await user_servicer.ListUsers(grpc_request, context)
     
@@ -562,10 +627,57 @@ async def list_users(
 
 
 @app.get("/api/v1/users/{user_id}")
-async def get_user(user_id: str):
-    """Get user by ID"""
+async def get_user(
+    user_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Get user by ID - verify user belongs to same organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Verify user belongs to same organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        # Get current user
+        current_user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = current_user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+        
+        # Get target user
+        target_user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_id))
+        )
+        target_user = target_user_result.scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if current user is super admin
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        # Organization admins can only access users from their organization
+        if target_user.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: User belongs to a different organization")
     
     context = MockContext()
     grpc_request = auth_pb2.GetUserRequest(user_id=user_id)
@@ -596,32 +708,61 @@ async def create_user(request: CreateUserRequest, authorization: Optional[str] =
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    # If organization_id not provided, get it from the current user's token
+    # Get organization_id from request or current user
     organization_id = request.organization_id
-    if not organization_id:
-        token = _get_token_from_header(authorization)
-        if token:
-            user_id = await _get_user_id_from_token(token)
-            if user_id:
-                # Get current user to extract organization_id
-                context_temp = MockContext()
-                grpc_request_temp = auth_pb2.GetCurrentUserRequest(token=token)
-                response_temp = await user_servicer.GetCurrentUser(grpc_request_temp, context_temp)
-                if not context_temp.code and response_temp.organization_id:
-                    organization_id = response_temp.organization_id
-                # If still no organization_id, try to get the first organization or default
-                if not organization_id:
-                    from app.database import AsyncSessionLocal
-                    from sqlalchemy.future import select
-                    from app.models.rbac import Organization
-                    async with AsyncSessionLocal() as db:
-                        result = await db.execute(select(Organization).limit(1))
-                        org = result.scalar_one_or_none()
-                        if org:
-                            organization_id = str(org.id)
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Organization
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        if not is_super:
+            # Organization admin: must create users in their own organization
+            if not current_user.organization_id:
+                raise HTTPException(status_code=400, detail="Current user must belong to an organization")
+            organization_id = str(current_user.organization_id)
+        else:
+            # Super admin: can specify organization_id, or use current user's, or foundry organization
+            if not organization_id:
+                if current_user.organization_id:
+                    # Use current user's organization
+                    organization_id = str(current_user.organization_id)
+                else:
+                    # Get foundry organization (platform owner)
+                    org_result = await db.execute(
+                        select(Organization).where(Organization.slug == "foundry")
+                    )
+                    foundry_org = org_result.scalar_one_or_none()
+                    if foundry_org:
+                        organization_id = str(foundry_org.id)
+                    else:
+                        # Get first organization as fallback
+                        org_result = await db.execute(select(Organization).limit(1))
+                        first_org = org_result.scalar_one_or_none()
+                        if first_org:
+                            organization_id = str(first_org.id)
     
     if not organization_id:
-        raise HTTPException(status_code=400, detail="organization_id is required. Please ensure you have an organization set up.")
+        raise HTTPException(status_code=400, detail="organization_id is required. Please specify an organization or ensure the foundry organization exists.")
     
     context = MockContext()
     grpc_request = auth_pb2.CreateUserRequest(
@@ -653,10 +794,58 @@ async def create_user(request: CreateUserRequest, authorization: Optional[str] =
 
 
 @app.put("/api/v1/users/{user_id}")
-async def update_user(user_id: str, request: UpdateUserRequest):
-    """Update user"""
+async def update_user(
+    user_id: str, 
+    request: UpdateUserRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """Update user - validate user belongs to same organization unless super admin"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Validate organization ownership
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        # Get current user
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+        
+        # Get target user
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_id))
+        )
+        target_user = result.scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if super admin
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        # If not super admin, ensure target user is in same organization
+        if target_user.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="You can only update users in your organization")
     
     context = MockContext()
     # Build gRPC request
@@ -710,10 +899,57 @@ async def update_user(user_id: str, request: UpdateUserRequest):
 
 
 @app.delete("/api/v1/users/{user_id}")
-async def delete_user(user_id: str):
-    """Delete user"""
+async def delete_user(
+    user_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete user - validate user belongs to same organization unless super admin"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Validate organization ownership
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        # Get current user
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+        
+        # Get target user
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_id))
+        )
+        target_user = result.scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if super admin
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        # If not super admin, ensure target user is in same organization
+        if target_user.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="You can only delete users in your organization")
     
     context = MockContext()
     grpc_request = auth_pb2.DeleteUserRequest(user_id=user_id)
@@ -749,278 +985,752 @@ async def update_user_role(user_id: str, request: AssignRoleRequest):
 # ==================== Role Endpoints ====================
 
 @app.get("/api/v1/roles")
-async def list_roles(platform_roles_only: bool = Query(False)):
-    """List roles"""
+async def list_roles(
+    platform_roles_only: bool = Query(False),
+    authorization: Optional[str] = Header(None)
+):
+    """List roles - filtered by organization context"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    # Always set the field - proto3 bool fields don't support HasField, so we always pass the value
-    grpc_request = auth_pb2.ListRolesRequest(platform_roles_only=platform_roles_only)
-    response = await role_servicer.ListRoles(grpc_request, context)
+    # Get current user's organization context
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        raise HTTPException(status_code=500, detail=context.details or "Failed to list roles")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return [{
-        "id": r.id,
-        "name": r.name,
-        "description": r.description,
-        "is_platform_role": r.is_platform_role,
-        "created_at": r.created_at,
-        "permissions": list(r.permissions) if r.permissions else []
-    } for r in response.roles]
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    from app.core.organization import get_user_organization
+    
+    is_super = False
+    organization_id = None
+    is_foundry = False
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            # Get user's organization for filtering (even for super admins)
+            org = await get_user_organization(current_user, db)
+            if org:
+                organization_id = str(org.id)
+                is_foundry = org.slug == "foundry"
+    
+    # Super admins should NOT see organization-specific resources from OTHER organizations
+    # But they CAN see resources from their own organization (e.g., Foundry)
+    # If super admin has no organization, return empty
+    if is_super and not organization_id:
+        return []
+    
+    # Use direct service call for better organization filtering
+    from app.services.role_service import role_service
+    async with AsyncSessionLocal() as db:
+        roles_list = await role_service.list_roles(
+            platform_roles_only=platform_roles_only,
+            db=db,
+            organization_id=organization_id,
+            include_system_roles=True
+        )
+    
+    # For Foundry organization, the service already returns all system roles + org roles
+    # So we can return the list directly (service handles Foundry special case)
+    if is_foundry:
+        return roles_list
+    
+    # Additional filtering for other organizations
+    if organization_id:
+        filtered_roles = []
+        org_id_str = str(organization_id)
+        for r in roles_list:
+            role_org_id = r.get("organization_id")
+            role_name = r.get("name", "")
+            is_platform = r.get("is_platform_role", False)
+            
+            # For other organizations: exclude system platform roles (platform-admin, super-admin) - only show organization-admin
+            if is_platform and role_name not in ["organization-admin"]:
+                continue
+            
+            # Include: organization-admin system role OR business unit roles from this organization
+            if role_name == "organization-admin":
+                filtered_roles.append(r)
+            elif not is_platform and role_org_id:
+                if str(role_org_id) == org_id_str:
+                    filtered_roles.append(r)
+        return filtered_roles
+    
+    return roles_list
 
 
 @app.get("/api/v1/roles/{role_id}")
-async def get_role(role_id: str):
-    """Get role by ID"""
+async def get_role(
+    role_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Get role by ID - verify it belongs to user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.GetRoleRequest(role_id=role_id)
-    response = await role_servicer.GetRole(grpc_request, context)
+    # Verify role belongs to user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 404 if context.code.value == 5 else 500
-        raise HTTPException(status_code=status_code, detail=context.details or "Role not found")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {
-        "id": response.id,
-        "name": response.name,
-        "description": response.description,
-        "is_platform_role": response.is_platform_role,
-        "created_at": response.created_at,
-        "permissions": list(response.permissions) if response.permissions else []
-    }
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Role
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        role_result = await db.execute(
+            select(Role).where(Role.id == uuid.UUID(role_id))
+        )
+        role = role_result.scalar_one_or_none()
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        if not is_super:
+            if role.organization_id is None:
+                if role.name != "organization-admin":
+                    raise HTTPException(status_code=403, detail="Access denied: System roles are not accessible")
+            elif role.organization_id != current_user.organization_id:
+                raise HTTPException(status_code=403, detail="Access denied: Role belongs to a different organization")
+    
+    from app.services.role_service import role_service
+    async with AsyncSessionLocal() as db:
+        role_data = await role_service.get_role(role_id, db)
+        return role_data
 
 
 @app.post("/api/v1/roles")
-async def create_role(request: CreateRoleRequest):
-    """Create role"""
+async def create_role(
+    request: CreateRoleRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """Create role - automatically uses current user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.CreateRoleRequest(
-        name=request.name,
-        description=request.description or "",
-        is_platform_role=request.is_platform_role,
-        permissions=request.permissions or []
-    )
-    response = await role_servicer.CreateRole(grpc_request, context)
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 409 if context.code.value == 6 else 400
-        raise HTTPException(status_code=status_code, detail=context.details or "Failed to create role")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info or not user_info.get("organization_id"):
+        raise HTTPException(status_code=401, detail="Invalid token or missing organization")
     
-    return {
-        "id": response.id,
-        "name": response.name,
-        "description": response.description,
-        "is_platform_role": response.is_platform_role,
-        "created_at": response.created_at,
-        "permissions": list(response.permissions) if response.permissions else []
-    }
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    organization_id = user_info["organization_id"]
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            if not is_super:
+                organization_id = str(current_user.organization_id)
+    
+    # Use service directly for better organization handling
+    from app.services.role_service import role_service
+    async with AsyncSessionLocal() as db:
+        role_data = await role_service.create_role(
+            name=request.name,
+            description=request.description,
+            is_platform_role=request.is_platform_role,
+            permissions=request.permissions or [],
+            organization_id=organization_id,
+            db=db
+        )
+        return role_data
 
 
 @app.put("/api/v1/roles/{role_id}")
-async def update_role(role_id: str, request: UpdateRoleRequest):
-    """Update role"""
+async def update_role(
+    role_id: str, 
+    request: UpdateRoleRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """Update role - verify it belongs to user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.UpdateRoleRequest(
-        role_id=role_id,
-        name=request.name or "",
-        description=request.description or "",
-        is_platform_role=request.is_platform_role if request.is_platform_role is not None else False,
-        permissions=request.permissions if request.permissions is not None else []
-    )
-    response = await role_servicer.UpdateRole(grpc_request, context)
+    # Verify role belongs to user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 404 if context.code.value == 5 else 400
-        raise HTTPException(status_code=status_code, detail=context.details or "Failed to update role")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {
-        "id": response.id,
-        "name": response.name,
-        "description": response.description,
-        "is_platform_role": response.is_platform_role,
-        "created_at": response.created_at,
-        "permissions": list(response.permissions) if response.permissions else []
-    }
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Role
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        role_result = await db.execute(
+            select(Role).where(Role.id == uuid.UUID(role_id))
+        )
+        role = role_result.scalar_one_or_none()
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        if role.organization_id is None:
+            if role.name != "organization-admin":
+                raise HTTPException(status_code=403, detail="Access denied: System roles are not accessible")
+        elif role.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: Role belongs to a different organization")
+    
+    from app.services.role_service import role_service
+    async with AsyncSessionLocal() as db:
+        role_data = await role_service.update_role(
+            role_id=role_id,
+            name=request.name,
+            description=request.description,
+            is_platform_role=request.is_platform_role,
+            permissions=request.permissions,
+            db=db
+        )
+        return role_data
 
 
 @app.delete("/api/v1/roles/{role_id}")
-async def delete_role(role_id: str):
-    """Delete role"""
+async def delete_role(
+    role_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete role - verify it belongs to user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.DeleteRoleRequest(role_id=role_id)
-    await role_servicer.DeleteRole(grpc_request, context)
+    # Verify role belongs to user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 404 if context.code.value == 5 else 500
-        raise HTTPException(status_code=status_code, detail=context.details or "Failed to delete role")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {"message": "Role deleted successfully"}
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Role
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        role_result = await db.execute(
+            select(Role).where(Role.id == uuid.UUID(role_id))
+        )
+        role = role_result.scalar_one_or_none()
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        if role.organization_id is None:
+            raise HTTPException(status_code=403, detail="Access denied: Cannot delete system roles")
+        elif role.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: Role belongs to a different organization")
+    
+    from app.services.role_service import role_service
+    async with AsyncSessionLocal() as db:
+        await role_service.delete_role(role_id, db)
+        return {"message": "Role deleted successfully"}
 
 
 # ==================== Group Endpoints ====================
 
 @app.get("/api/v1/groups")
-async def list_groups():
-    """List groups"""
+async def list_groups(
+    authorization: Optional[str] = Header(None)
+):
+    """List groups - filtered by organization context"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.ListGroupsRequest()
-    response = await group_servicer.ListGroups(grpc_request, context)
+    # Get current user's organization context
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        raise HTTPException(status_code=500, detail=context.details or "Failed to list groups")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return [{
-        "id": g.id,
-        "name": g.name,
-        "description": g.description,
-        "created_at": g.created_at,
-    } for g in response.groups]
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    from app.core.organization import get_user_organization
+    
+    is_super = False
+    organization_id = None
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            if not is_super:
+                org = await get_user_organization(current_user, db)
+                organization_id = str(org.id) if org else None
+    
+    # Super admins should NOT see organization-specific resources
+    # They can only manage organizations, not see roles/groups/users from those organizations
+    if is_super:
+        return []
+    
+    # Use direct service call for better organization filtering
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        groups_list = await group_service.list_groups(
+            db=db,
+            organization_id=organization_id
+        )
+    
+    return groups_list
 
 
 @app.get("/api/v1/groups/{group_id}")
-async def get_group(group_id: str):
-    """Get group by ID"""
+async def get_group(
+    group_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Get group by ID - verify it belongs to user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.GetGroupRequest(group_id=group_id)
-    response = await group_servicer.GetGroup(grpc_request, context)
+    # Verify group belongs to user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 404 if context.code.value == 5 else 500
-        raise HTTPException(status_code=status_code, detail=context.details or "Group not found")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {
-        "id": response.id,
-        "name": response.name,
-        "description": response.description,
-        "created_at": response.created_at,
-    }
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Group
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        group_result = await db.execute(
+            select(Group).where(Group.id == uuid.UUID(group_id))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        if not is_super:
+            if group.organization_id != current_user.organization_id:
+                raise HTTPException(status_code=403, detail="Access denied: Group belongs to a different organization")
+    
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        group_data = await group_service.get_group(group_id, db)
+        return group_data
 
 
 @app.post("/api/v1/groups")
-async def create_group(request: CreateGroupRequest):
-    """Create group"""
+async def create_group(
+    request: CreateGroupRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """Create group - scoped to current user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.CreateGroupRequest(
-        name=request.name,
-        description=request.description or ""
-    )
-    response = await group_servicer.CreateGroup(grpc_request, context)
+    # Get current user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 409 if context.code.value == 6 else 400
-        raise HTTPException(status_code=status_code, detail=context.details or "Failed to create group")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {
-        "id": response.id,
-        "name": response.name,
-        "description": response.description,
-        "created_at": response.created_at,
-    }
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    from app.core.organization import get_user_organization
+    
+    organization_id = None
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            if not is_super:
+                org = await get_user_organization(current_user, db)
+                organization_id = str(org.id) if org else None
+            else:
+                raise HTTPException(status_code=403, detail="Super admins cannot create groups directly")
+    
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="Organization ID is required")
+    
+    # Use direct service call
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        try:
+            group = await group_service.create_group(
+                name=request.name,
+                description=request.description,
+                db=db,
+                organization_id=organization_id
+            )
+            return group
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to create group: {str(e)}")
 
 
 @app.put("/api/v1/groups/{group_id}")
-async def update_group(group_id: str, request: UpdateGroupRequest):
-    """Update group"""
+async def update_group(
+    group_id: str, 
+    request: UpdateGroupRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """Update group - verify it belongs to user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.UpdateGroupRequest(
-        group_id=group_id,
-        name=request.name or "",
-        description=request.description or ""
-    )
-    response = await group_servicer.UpdateGroup(grpc_request, context)
+    # Verify group belongs to user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 404 if context.code.value == 5 else 400
-        raise HTTPException(status_code=status_code, detail=context.details or "Failed to update group")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {
-        "id": response.id,
-        "name": response.name,
-        "description": response.description,
-        "created_at": response.created_at,
-    }
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Group
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        group_result = await db.execute(
+            select(Group).where(Group.id == uuid.UUID(group_id))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        if group.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: Group belongs to a different organization")
+    
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        group_data = await group_service.update_group(
+            group_id=group_id,
+            name=request.name,
+            description=request.description,
+            db=db
+        )
+        return group_data
 
 
 @app.delete("/api/v1/groups/{group_id}")
-async def delete_group(group_id: str):
-    """Delete group"""
+async def delete_group(
+    group_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete group - verify it belongs to user's organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.DeleteGroupRequest(group_id=group_id)
-    await group_servicer.DeleteGroup(grpc_request, context)
+    # Verify group belongs to user's organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        status_code = 404 if context.code.value == 5 else 500
-        raise HTTPException(status_code=status_code, detail=context.details or "Failed to delete group")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {"message": "Group deleted successfully"}
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Group
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        group_result = await db.execute(
+            select(Group).where(Group.id == uuid.UUID(group_id))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        if group.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: Group belongs to a different organization")
+    
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        await group_service.delete_group(group_id, db)
+        return {"message": "Group deleted successfully"}
 
 
 @app.post("/api/v1/groups/{group_id}/users/{user_id}")
-async def add_user_to_group(group_id: str, user_id: str):
-    """Add user to group"""
+async def add_user_to_group(
+    group_id: str, 
+    user_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Add user to group - verify group and user belong to same organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.AddGroupMemberRequest(
-        group_id=group_id,
-        user_id=user_id
-    )
-    await group_servicer.AddGroupMember(grpc_request, context)
+    # Verify group and user belong to same organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        raise HTTPException(status_code=400, detail=context.details or "Failed to add user to group")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {"message": "User added to group successfully"}
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Group
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        current_user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = current_user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+        
+        group_result = await db.execute(
+            select(Group).where(Group.id == uuid.UUID(group_id))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        target_user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_id))
+        )
+        target_user = target_user_result.scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        if group.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: Group belongs to a different organization")
+        if target_user.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: User belongs to a different organization")
+    
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        try:
+            await group_service.add_group_member(
+                group_id=group_id,
+                user_id=user_id,
+                organization_id=str(current_user.organization_id),
+                db=db
+            )
+            return {"message": "User added to group successfully"}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to add user to group: {str(e)}")
 
 
 @app.delete("/api/v1/groups/{group_id}/users/{user_id}")
-async def remove_user_from_group(group_id: str, user_id: str):
-    """Remove user from group"""
+async def remove_user_from_group(
+    group_id: str, 
+    user_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Remove user from group - verify group and user belong to same organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
-    grpc_request = auth_pb2.RemoveGroupMemberRequest(
-        group_id=group_id,
-        user_id=user_id
-    )
-    await group_servicer.RemoveGroupMember(grpc_request, context)
+    # Verify group and user belong to same organization
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
     
-    if context.code:
-        raise HTTPException(status_code=400, detail=context.details or "Failed to remove user from group")
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    return {"message": "User removed from group successfully"}
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User, Group
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        current_user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = current_user_result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="Current user not found")
+        
+        group_result = await db.execute(
+            select(Group).where(Group.id == uuid.UUID(group_id))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        target_user_result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_id))
+        )
+        target_user = target_user_result.scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # Super admins should NOT access organization-specific resources
+        if is_super:
+            raise HTTPException(status_code=403, detail="Super admins cannot access organization-specific resources")
+        
+        if group.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: Group belongs to a different organization")
+        if target_user.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied: User belongs to a different organization")
+    
+    from app.services.group_service import group_service
+    async with AsyncSessionLocal() as db:
+        try:
+            await group_service.remove_group_member(
+                group_id=group_id,
+                user_id=user_id,
+                organization_id=str(current_user.organization_id),
+                db=db
+            )
+            return {"message": "User removed from group successfully"}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to remove user from group: {str(e)}")
 
 
 # ==================== Business Unit Endpoints ====================
@@ -1068,11 +1778,39 @@ async def list_business_units(
 
 @app.get("/api/v1/business-units/users/available")
 async def get_available_users_for_business_unit(
-    search: Optional[str] = Query(None)
+    search: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None)
 ):
-    """Get users available to be added to a business unit"""
+    """Get users available to be added to a business unit - filtered by organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    organization_id = None
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            if not is_super:
+                organization_id = str(current_user.organization_id)
     
     from app.database import AsyncSessionLocal
     from sqlalchemy.future import select
@@ -1103,18 +1841,61 @@ async def get_available_users_for_business_unit(
 
 
 @app.get("/api/v1/business-units/roles/available")
-async def get_available_roles_for_business_unit():
-    """Get roles available to be assigned in a business unit"""
+async def get_available_roles_for_business_unit(
+    authorization: Optional[str] = Header(None)
+):
+    """Get roles available to be assigned in a business unit - filtered by organization"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
     from app.database import AsyncSessionLocal
+    from app.models.rbac import User
     from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    organization_id = None
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_info["user_id"]))
+        )
+        current_user = result.scalar_one_or_none()
+        if current_user:
+            enforcer = get_enforcer()
+            is_super = await is_super_admin(current_user, db, enforcer)
+            if is_super:
+                # Super admins should NOT see organization-specific resources
+                return []
+            if not is_super:
+                organization_id = str(current_user.organization_id)
+    
+    # Get roles filtered by organization
     from app.models.rbac import Role
+    from sqlalchemy import or_, and_
     
     async with AsyncSessionLocal() as db:
-        # Get all roles (both platform and BU roles can be assigned)
         query = select(Role)
+        if organization_id:
+            org_uuid = uuid.UUID(organization_id)
+            query = query.where(
+                or_(
+                    Role.organization_id == org_uuid,
+                    and_(Role.organization_id.is_(None), Role.name == "organization-admin")
+                )
+            )
+        else:
+            # Super admins see all system roles
+            query = query.where(Role.organization_id.is_(None))
+        
         result = await db.execute(query)
         roles = result.scalars().all()
         
@@ -1653,10 +2434,42 @@ async def get_current_organization(user_id: str = Query(...)):
 
 
 @app.get("/api/v1/organizations/{org_id}")
-async def get_organization(org_id: str):
-    """Get organization by ID"""
+async def get_organization(
+    org_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Get organization by ID - verify user belongs to organization unless super admin"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Check authorization: super admin can access any org, others only their own
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    from app.database import AsyncSessionLocal
+    from app.models.rbac import User
+    from sqlalchemy.future import select
+    from app.utils.helpers import is_super_admin
+    from app.core.casbin import get_enforcer
+    
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.id == uuid.UUID(user_info["user_id"])))
+        current_user = result.scalar_one_or_none()
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        enforcer = get_enforcer()
+        is_super = await is_super_admin(current_user, db, enforcer)
+        
+        # If not super admin, check if accessing own organization
+        if not is_super:
+            if str(current_user.organization_id) != org_id:
+                raise HTTPException(status_code=403, detail="Access denied")
     
     context = MockContext()
     grpc_request = auth_pb2.GetOrganizationRequest(organization_id=org_id)
@@ -1968,18 +2781,32 @@ class CreateCredentialRequest(BaseModel):
 
 
 @app.post("/api/admin/credentials", status_code=201)
-async def create_credential(request: CreateCredentialRequest):
+async def create_credential(
+    request: CreateCredentialRequest,
+    authorization: Optional[str] = Header(None)
+):
     """Create credential"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info or not user_info.get("organization_id"):
+        raise HTTPException(status_code=401, detail="Invalid token or missing organization")
+    
     import json
     context = MockContext()
+    context.set_metadata('organization-id', user_info["organization_id"])
     grpc_request = auth_pb2.CreateCredentialRequest(
         name=request.name,
         provider=request.provider,
         credentials=json.dumps(request.credentials)
     )
+    
     response = await credential_servicer.CreateCredential(grpc_request, context)
     
     if context.code:
@@ -1996,13 +2823,24 @@ async def create_credential(request: CreateCredentialRequest):
 
 
 @app.get("/api/admin/credentials")
-async def list_credentials():
+async def list_credentials(authorization: Optional[str] = Header(None)):
     """List credentials"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info or not user_info.get("organization_id"):
+        raise HTTPException(status_code=401, detail="Invalid token or missing organization")
+    
     context = MockContext()
+    context.set_metadata('organization-id', user_info["organization_id"])
     grpc_request = auth_pb2.ListCredentialsRequest()
+    
     response = await credential_servicer.ListCredentials(grpc_request, context)
     
     if context.code:
@@ -2018,13 +2856,27 @@ async def list_credentials():
 
 
 @app.get("/api/admin/credentials/{credential_id}")
-async def get_credential(credential_id: str):
+async def get_credential(
+    credential_id: str,
+    authorization: Optional[str] = Header(None)
+):
     """Get credential"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info or not user_info.get("organization_id"):
+        raise HTTPException(status_code=401, detail="Invalid token or missing organization")
+    
     context = MockContext()
+    context.set_metadata('organization-id', user_info["organization_id"])
     grpc_request = auth_pb2.GetCredentialRequest(credential_id=credential_id)
+    
     response = await credential_servicer.GetCredential(grpc_request, context)
     
     if context.code:
@@ -2041,13 +2893,27 @@ async def get_credential(credential_id: str):
 
 
 @app.delete("/api/admin/credentials/{credential_id}")
-async def delete_credential(credential_id: str):
+async def delete_credential(
+    credential_id: str,
+    authorization: Optional[str] = Header(None)
+):
     """Delete credential"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
+    # Get organization_id from user token
+    token = _get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization token required")
+    
+    user_info = await _get_user_info_from_token(token)
+    if not user_info or not user_info.get("organization_id"):
+        raise HTTPException(status_code=401, detail="Invalid token or missing organization")
+    
     context = MockContext()
+    context.set_metadata('organization-id', user_info["organization_id"])
     grpc_request = auth_pb2.DeleteCredentialRequest(credential_id=credential_id)
+    
     await credential_servicer.DeleteCredential(grpc_request, context)
     
     if context.code:

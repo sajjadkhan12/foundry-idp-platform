@@ -30,6 +30,8 @@ export const LoginPage: React.FC = () => {
 
     try {
       await login(identifier, password);
+      // Small delay to ensure state is updated before navigation
+      await new Promise(resolve => setTimeout(resolve, 100));
       navigate(from, { replace: true });
     } catch (err: any) {
       const errorMessage = err.message || 'Invalid credentials';

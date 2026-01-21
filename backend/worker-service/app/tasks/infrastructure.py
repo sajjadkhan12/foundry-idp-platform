@@ -24,6 +24,7 @@ from app.models import (
 from app.utils.notification_helper import create_notification_sync
 from app.services.storage import storage_service
 from app.services.pulumi_service import pulumi_service
+from app.services.pulumi_deployments_service import pulumi_deployments_service, DeploymentOperation, DeploymentStatus as PulumiDeploymentStatus
 from app.services.crypto import crypto_service
 from app.services.git_service import git_service
 
@@ -153,13 +154,26 @@ class InfrastructureProvisionTask:
             self.log_message("WARNING", f"stack_name was empty/None, using generated name: {stack_name}")
         
         # Setup plugin source (GitOps or ZIP)
-        extract_path = self._setup_plugin_source(
+        extract_path, deployment_branch = self._setup_plugin_source(
             plugin_version, deployment, inputs, stack_name, resource_name, plugin_id, version
         )
         
+        # Get organization_id and business_unit_id from deployment/user
+        organization_id = None
+        business_unit_id = None
+        if deployment:
+            business_unit_id = str(deployment.business_unit_id) if deployment.business_unit_id else None
+            # Get organization_id from user or business unit
+            if deployment.user:
+                organization_id = str(deployment.user.organization_id)
+            elif deployment.business_unit:
+                organization_id = str(deployment.business_unit.organization_id)
+        
         # ESC is required for credential management
-        esc_env = pulumi_service.get_esc_environment(plugin_version.manifest)
-        if not esc_env:
+        # Note: esc_env will be determined inside run_pulumi using org configs
+        esc_env = pulumi_deployments_service.get_esc_environment(plugin_version.manifest)
+        if not esc_env and not organization_id:
+            # Only check system defaults if no org config available
             cloud_provider = plugin_version.manifest.get("cloud_provider", "unknown").lower()
             error_msg = f"ESC environment not configured for {cloud_provider}. Please set PULUMI_ESC_ENVIRONMENT_{cloud_provider.upper()} in configuration."
             self.log_message("ERROR", error_msg)
@@ -172,7 +186,7 @@ class InfrastructureProvisionTask:
                     logger.warning(f"Failed to update deployment status: {deploy_error}")
             raise Exception(error_msg)
         
-        self.log_message("INFO", f"ESC environment configured: {esc_env} - using automatic credential management")
+        self.log_message("INFO", f"Using organization configs: org={organization_id}, bu={business_unit_id}")
         
         # Define callback for Pulumi output
         def on_output(msg):
@@ -180,16 +194,83 @@ class InfrastructureProvisionTask:
             clean_msg = msg[9:] if msg.startswith("[Pulumi] ") else msg
             self.log_message("INFO", clean_msg)
         
-        # Run Pulumi
-        self.log_message("INFO", f"Executing Pulumi program with ESC environment: {esc_env}")
-        result = asyncio.run(pulumi_service.run_pulumi(
-            plugin_path=extract_path,
-            stack_name=stack_name,
-            config=inputs,
-            credentials=None,  # ESC handles credentials automatically
-            manifest=plugin_version.manifest,
-            on_output=on_output
-        ))
+        # Run Pulumi - use Deployments API for GitOps flow, local for ZIP
+        use_deployments_api = (
+            plugin_version.git_repo_url and 
+            deployment_branch and 
+            settings.PULUMI_ACCESS_TOKEN and
+            settings.PULUMI_ORG
+        )
+        
+        if use_deployments_api:
+            # Use Pulumi Deployments API - runs on Pulumi Cloud infrastructure
+            # This enables unlimited concurrent deployments without local resource constraints
+            self.log_message("INFO", f"Using Pulumi Deployments API (Cloud execution)")
+            self.log_message("INFO", f"Git source: {plugin_version.git_repo_url} @ {deployment_branch}")
+            
+            # Get Pulumi access token (prefer org config, fallback to system)
+            pulumi_access_token = settings.PULUMI_ACCESS_TOKEN
+            pulumi_org = settings.PULUMI_ORG
+            
+            if organization_id:
+                from app.utils.config_helper import get_config_from_auth_service
+                org_token = asyncio.run(get_config_from_auth_service(
+                    organization_id, "PULUMI_ACCESS_TOKEN", business_unit_id
+                ))
+                org_org = asyncio.run(get_config_from_auth_service(
+                    organization_id, "PULUMI_ORG", business_unit_id
+                ))
+                if org_token:
+                    pulumi_access_token = org_token
+                if org_org:
+                    pulumi_org = org_org
+            
+            if not pulumi_access_token or not pulumi_org:
+                error_msg = "PULUMI_ACCESS_TOKEN and PULUMI_ORG are required for Pulumi Deployments API"
+                self.log_message("ERROR", error_msg)
+                raise Exception(error_msg)
+            
+            # Trigger deployment via Pulumi Cloud
+            deployment_result = asyncio.run(pulumi_deployments_service.trigger_deployment(
+                organization=pulumi_org,
+                project=plugin_id,  # Use plugin_id as project name
+                stack=stack_name,
+                operation=DeploymentOperation.UPDATE,
+                git_repo_url=plugin_version.git_repo_url,
+                git_branch=deployment_branch,
+                git_repo_dir="",  # Root of repo
+                config=inputs,
+                esc_environment=esc_env,
+                access_token=pulumi_access_token,
+                on_output=on_output,
+            ))
+            
+            # Convert DeploymentResult to standard result format
+            if deployment_result.status == PulumiDeploymentStatus.SUCCEEDED:
+                result = {
+                    "status": "success",
+                    "outputs": deployment_result.outputs,
+                    "summary": {"pulumi_deployment_id": deployment_result.deployment_id}
+                }
+            else:
+                result = {
+                    "status": "failed",
+                    "error": deployment_result.error or "Deployment failed",
+                    "outputs": {}
+                }
+        else:
+            # Fallback to local Pulumi execution (for ZIP-based plugins or missing config)
+            self.log_message("INFO", f"Using local Pulumi execution (ZIP-based or missing Deployments API config)")
+            result = asyncio.run(pulumi_service.run_pulumi(
+                plugin_path=extract_path,
+                stack_name=stack_name,
+                config=inputs,
+                credentials=None,  # ESC handles credentials automatically
+                manifest=plugin_version.manifest,
+                on_output=on_output,
+                organization_id=organization_id,
+                business_unit_id=business_unit_id
+            ))
         
         # Handle result
         self._handle_provision_result(result, job, deployment, inputs, is_update, resource_name, stack_name)
@@ -294,6 +375,7 @@ class InfrastructureProvisionTask:
                     version=version,
                     status=DeploymentStatus.PROVISIONING,
                     user_id=user_id,
+                    organization_id=user.organization_id if user else None,
                     inputs=inputs,
                     stack_name=stack_name,
                     cloud_provider=plugin_version.manifest.get("cloud_provider", "unknown"),
@@ -318,13 +400,33 @@ class InfrastructureProvisionTask:
     
     def _setup_plugin_source(self, plugin_version, deployment, inputs: dict,
                             stack_name: str, resource_name: str, plugin_id: str,
-                            version: str) -> Path:
-        """Setup GitOps or ZIP extraction"""
+                            version: str) -> Tuple[Path, Optional[str]]:
+        """Setup GitOps or ZIP extraction.
+        
+        Returns:
+            Tuple of (extract_path, deployment_branch).
+            deployment_branch is None for ZIP-based plugins.
+        """
         self.temp_dir = Path(tempfile.mkdtemp())
+        deployment_branch = None
         
         if plugin_version.git_repo_url and plugin_version.git_branch:
             # GitOps flow
             self.log_message("INFO", f"Using GitOps: {plugin_version.git_repo_url} branch {plugin_version.git_branch}")
+            
+            # Determine organization_id for Git token lookup
+            organization_id = None
+            business_unit_id = None
+            if deployment:
+                business_unit_id = str(deployment.business_unit_id) if deployment.business_unit_id else None
+                if deployment.user:
+                    organization_id = str(deployment.user.organization_id)
+                elif deployment.business_unit:
+                    organization_id = str(deployment.business_unit.organization_id)
+            
+            # Get GitHub token specifically for this org
+            github_token = git_service.get_github_token(organization_id, business_unit_id)
+            
             try:
                 # Check if deployment already has a git branch
                 if deployment and deployment.git_branch:
@@ -333,7 +435,8 @@ class InfrastructureProvisionTask:
                     repo_path = git_service.clone_repository(
                         plugin_version.git_repo_url,
                         deployment_branch,
-                        self.temp_dir / "repo"
+                        self.temp_dir / "repo",
+                        token=github_token
                     )
                     git_service.inject_user_values(repo_path, inputs, plugin_version.manifest, stack_name)
                     git_service.commit_changes(
@@ -342,12 +445,21 @@ class InfrastructureProvisionTask:
                         "IDP System",
                         "idp@system"
                     )
+                    # Push the update to GitHub
+                    try:
+                        git_service.push_branch(repo_path, deployment_branch)
+                        self.log_message("INFO", f"Pushed update to deployment branch '{deployment_branch}'")
+                    except Exception as push_error:
+                        self.log_message("WARNING", f"Failed to push update to GitHub: {push_error}")
+                        # If push fails, Pulumi Deployments API won't work
+                        deployment_branch = None
                 else:
                     # First deployment - create new branch
                     repo_path = git_service.clone_repository(
                         plugin_version.git_repo_url,
                         plugin_version.git_branch,
-                        self.temp_dir / "repo"
+                        self.temp_dir / "repo",
+                        token=github_token
                     )
                     
                     # Create deployment branch name
@@ -371,33 +483,36 @@ class InfrastructureProvisionTask:
                         "idp@system"
                     )
                     
-                    # Push branch to GitHub
+                    # Push branch to GitHub - required for Pulumi Deployments API
                     try:
                         git_service.push_branch(repo_path, deployment_branch)
                         self.log_message("INFO", f"Pushed deployment branch '{deployment_branch}' to GitHub")
                     except Exception as push_error:
-                        self.log_message("WARNING", f"Failed to push branch to GitHub (will use local): {push_error}")
+                        self.log_message("WARNING", f"Failed to push branch to GitHub (will use local Pulumi): {push_error}")
+                        # If push fails, we can't use Pulumi Deployments API
+                        deployment_branch = None
                     
                     # Update deployment with git branch
-                    if deployment:
+                    if deployment and deployment_branch:
                         deployment.git_branch = deployment_branch
                         self.db.commit()
                         self.log_message("INFO", f"Updated deployment record with git branch: {deployment_branch}")
                 
-                self.log_message("INFO", f"GitOps setup complete: branch {deployment_branch}")
-                return repo_path
+                if deployment_branch:
+                    self.log_message("INFO", f"GitOps setup complete: branch {deployment_branch}")
+                return repo_path, deployment_branch
                 
             except Exception as e:
                 error_msg = f"GitOps setup failed: {str(e)}"
                 self.log_message("ERROR", error_msg)
                 logger.error(error_msg, exc_info=True)
                 self.log_message("INFO", "Falling back to ZIP extraction")
-                return storage_service.extract_plugin(plugin_id, version, self.temp_dir)
+                return storage_service.extract_plugin(plugin_id, version, self.temp_dir), None
         else:
             # Legacy ZIP flow
             extract_path = storage_service.extract_plugin(plugin_id, version, self.temp_dir)
             self.log_message("INFO", f"Extracted plugin ZIP to {extract_path}")
-            return extract_path
+            return extract_path, None
     
     
     def _handle_provision_result(self, result: Dict, job: Job, deployment: Optional[Deployment],
@@ -425,10 +540,11 @@ class InfrastructureProvisionTask:
             return
         
         if result["status"] == "success":
-            job.status = JobStatus.SUCCESS
+            job.status = JobStatus.SUCCESS.value
             job.outputs = result["outputs"]
             job.finished_at = datetime.now(timezone.utc)
             self.db.add(job)  # Explicitly add job to ensure status is saved
+            self.db.commit()  # Commit job status early
             
             if deployment:
                 if is_update:
@@ -448,7 +564,7 @@ class InfrastructureProvisionTask:
                     else:
                         self.log_message("INFO", "Inputs unchanged; skipping new history version")
                 else:
-                    deployment.status = DeploymentStatus.ACTIVE
+                    deployment.status = DeploymentStatus.ACTIVE.value
                     deployment.stack_name = stack_name
                     deployment.outputs = result["outputs"]
                     self.log_message("INFO", "Provisioning completed successfully")
@@ -456,7 +572,17 @@ class InfrastructureProvisionTask:
                     # Save initial history entry
                     self._save_deployment_history(deployment, inputs, result["outputs"], job, is_update=False)
                 
+                # Calculate and update cost estimate after provisioning
+                try:
+                    estimated_cost = self._estimate_deployment_cost(deployment, inputs)
+                    if estimated_cost > 0:
+                        deployment.estimated_monthly_cost = estimated_cost
+                        self.log_message("INFO", f"Estimated monthly cost: ${estimated_cost:.2f}")
+                except Exception as cost_err:
+                    self.log_message("WARNING", f"Failed to estimate cost: {cost_err}")
+                
                 self.db.add(deployment)
+
             
             # Create success notification
             self._create_notification(deployment, resource_name, is_update, success=True)
@@ -471,9 +597,10 @@ class InfrastructureProvisionTask:
             # Update job status - ensure it's explicitly added to session
             job.error_state = error_state
             job.error_message = error_msg
-            job.status = JobStatus.FAILED
+            job.status = JobStatus.FAILED.value
             job.finished_at = datetime.now(timezone.utc)
             self.db.add(job)  # Explicitly add job to ensure it's saved
+            self.db.commit()  # Commit job status early
             
             if is_update and deployment:
                 deployment.update_status = "update_failed"
@@ -514,8 +641,9 @@ class InfrastructureProvisionTask:
             else:
                 # For new deployments, always set status to FAILED
                 if deployment:
-                    deployment.status = DeploymentStatus.FAILED
+                    deployment.status = DeploymentStatus.FAILED.value
                     self.db.add(deployment)
+                    self.db.commit() # Commit deployment status
                     self.log_message("ERROR", f"Deployment status set to FAILED: {error_msg}")
                 else:
                     self.log_message("WARNING", f"No deployment found to update status for job {self.job_id}")
@@ -523,7 +651,12 @@ class InfrastructureProvisionTask:
                 self.log_message("ERROR", f"Provisioning failed: {error_msg}")
                 self.log_message("ERROR", f"Error category: {error_state}")
                 
-                self._create_notification(deployment, resource_name, is_update=False, success=False, error_state=error_state)
+                
+                try:
+                    self._create_notification(deployment, resource_name, is_update=False, success=False, error_state=error_state)
+                except Exception as notif_err:
+                    logger.warning(f"Failed to create notification: {notif_err}")
+                
                 self.db.commit()
                 logger.error(f"[FAILED] Job {self.job_id} failed. Error: {error_state} - {error_msg}")
     
@@ -594,7 +727,67 @@ class InfrastructureProvisionTask:
         except Exception as hist_error:
             self.log_message("WARNING", f"Failed to save deployment history: {hist_error}")
     
+    def _estimate_deployment_cost(self, deployment, inputs: dict) -> float:
+        """Estimate monthly cost based on deployment type and inputs"""
+        estimated_cost = 0.0
+        plugin_id = deployment.plugin_id.lower() if deployment.plugin_id else ""
+        cloud_provider = (deployment.cloud_provider or "gcp").lower()
+        
+        # GCS Bucket estimation
+        if "bucket" in plugin_id or "storage" in plugin_id:
+            storage_class = inputs.get("storage_class", "STANDARD")
+            base_costs = {"STANDARD": 0.020, "NEARLINE": 0.010, "COLDLINE": 0.004, "ARCHIVE": 0.0012}
+            base_cost = base_costs.get(storage_class, 0.020)
+            # Assume 100GB baseline
+            estimated_cost = base_cost * 100
+        
+        # Compute instance estimation
+        elif "compute" in plugin_id or "vm" in plugin_id or "instance" in plugin_id:
+            machine_type = inputs.get("machine_type", "e2-micro")
+            machine_costs = {
+                "e2-micro": 6.11, "e2-small": 12.23, "e2-medium": 24.46,
+                "n1-standard-1": 24.27, "n1-standard-2": 48.55, "n1-standard-4": 97.09,
+                "n2-standard-2": 69.35, "n2-standard-4": 138.70,
+                "t2.micro": 8.47, "t2.small": 16.94, "t2.medium": 33.87,  # AWS
+                "t3.micro": 7.59, "t3.small": 15.18, "t3.medium": 30.37,  # AWS
+            }
+            estimated_cost = machine_costs.get(machine_type, 25.0)
+        
+        # Cloud SQL / Database estimation
+        elif "sql" in plugin_id or "database" in plugin_id or "rds" in plugin_id:
+            tier = inputs.get("tier") or inputs.get("instance_class", "db-f1-micro")
+            tier_costs = {
+                "db-f1-micro": 7.67, "db-g1-small": 25.55, "db-n1-standard-1": 51.10, "db-n1-standard-2": 102.20,
+                "db.t2.micro": 12.41, "db.t2.small": 24.82, "db.t3.micro": 12.41, "db.t3.small": 24.82,  # AWS
+            }
+            estimated_cost = tier_costs.get(tier, 25.0)
+        
+        # Kubernetes / GKE / EKS
+        elif "kubernetes" in plugin_id or "gke" in plugin_id or "eks" in plugin_id:
+            node_count = int(inputs.get("node_count", inputs.get("num_nodes", 3)))
+            machine_type = inputs.get("machine_type", inputs.get("instance_type", "e2-medium"))
+            machine_costs = {"e2-medium": 24.46, "e2-standard-2": 48.92, "e2-standard-4": 97.84, "n1-standard-1": 24.27}
+            cost_per_node = machine_costs.get(machine_type, 30.0)
+            # GKE management fee: $0.10/hour = ~$73/month for clusters, 0 for Autopilot free tier
+            management_fee = 73.0
+            estimated_cost = (cost_per_node * node_count) + management_fee
+        
+        # VPC / Network
+        elif "vpc" in plugin_id or "network" in plugin_id:
+            estimated_cost = 5.0  # Minimal cost for VPC
+        
+        # Pub/Sub
+        elif "pubsub" in plugin_id:
+            estimated_cost = 10.0  # Baseline for Pub/Sub
+        
+        # Default fallback
+        else:
+            estimated_cost = 10.0
+        
+        return round(estimated_cost, 2)
+    
     def _create_notification(self, deployment: Optional[Deployment], resource_name: str,
+
                            is_update: bool, success: bool, error_state: str = None):
         """Create notification for user"""
         job = self.db.execute(select(Job).where(Job.id == self.job_id)).scalar_one()
@@ -656,9 +849,10 @@ class InfrastructureProvisionTask:
             error_state = categorize_error(error_msg)
             job.error_state = error_state
             job.error_message = error_msg
-            job.status = JobStatus.FAILED
+            job.status = JobStatus.FAILED.value
             job.finished_at = datetime.now(timezone.utc)
             self.db.add(job)  # Explicitly add job to ensure it's saved
+            self.db.commit()  # Commit job status early
             
             self.log_message("ERROR", f"Internal Error: {error_msg}")
             self.log_message("ERROR", f"Exception occurred: {error_msg}")
@@ -691,9 +885,10 @@ class InfrastructureProvisionTask:
                 self._create_notification(deployment, deployment.name if deployment else "resource", is_update=True, success=False, error_state=error_state)
             elif deployment:
                 # For new deployments or deployments in PROVISIONING status, set to FAILED
-                if deployment.status in [DeploymentStatus.PROVISIONING, DeploymentStatus.ACTIVE]:
-                    deployment.status = DeploymentStatus.FAILED
+                if deployment.status in [DeploymentStatus.PROVISIONING.value, DeploymentStatus.ACTIVE.value]:
+                    deployment.status = DeploymentStatus.FAILED.value
                     self.db.add(deployment)
+                    self.db.commit()
                     self.log_message("ERROR", f"Deployment status set to FAILED due to error: {error_msg}")
                 else:
                     # Deployment might already be in a different state, but still log the error
@@ -714,10 +909,10 @@ class InfrastructureProvisionTask:
 class InfrastructureDestroyTask:
     """Task for destroying infrastructure"""
     
-    def __init__(self, deployment_id: str):
+    def __init__(self, deployment_id: str, job_id: str = None):
         self.deployment_id = deployment_id
         self.db: Optional[Session] = None
-        self.deletion_job_id: Optional[str] = None
+        self.deletion_job_id = job_id
         self.temp_dir: Optional[Path] = None
     
     def log_message(self, level: str, message: str):
@@ -743,10 +938,7 @@ class InfrastructureDestroyTask:
         try:
             # Define callback for Pulumi output
             def on_output(msg):
-                # We don't have a job_id here for log_message, so we log to server logs
-                # and potentially update deployment status if we had a way to log specifically
-                # for destroy tasks. For now, server logs it is.
-                logger.info(f"[Pulumi Destroy] {msg}")
+                self.log_message("INFO", f"[Pulumi Destroy] {msg}")
             
             return self._destroy(on_output=on_output)
         except Exception as e:
@@ -786,10 +978,17 @@ class InfrastructureDestroyTask:
             logger.error(f"Deployment {self.deployment_id} not found")
             return {"status": "error", "message": "Deployment not found"}
         
-        # Find deletion job
-        deletion_job = self._find_deletion_job(deployment)
+        if not self.deletion_job_id:
+            # Find deletion job
+            deletion_job = self._find_deletion_job(deployment)
+            if deletion_job:
+                self.deletion_job_id = deletion_job.id
+        else:
+            # Use provided job_id
+            from app.models import Job
+            deletion_job = self.db.execute(select(Job).where(Job.id == self.deletion_job_id)).scalar_one_or_none()
+
         if deletion_job:
-            self.deletion_job_id = deletion_job.id
             if deletion_job.status == JobStatus.PENDING:
                 deletion_job.status = JobStatus.RUNNING
                 self.db.commit()
@@ -823,23 +1022,92 @@ class InfrastructureDestroyTask:
             # ESC is required for credential management when destroying a stack
             # Create minimal manifest for ESC lookup
             manifest = {"cloud_provider": deployment.cloud_provider.lower()} if deployment.cloud_provider else None
-            esc_env = pulumi_service.get_esc_environment(manifest)
+            esc_env = pulumi_deployments_service.get_esc_environment(manifest)
             if not esc_env:
                 cloud_provider = deployment.cloud_provider or "unknown"
                 error_msg = f"ESC environment not configured for {cloud_provider}. Please set PULUMI_ESC_ENVIRONMENT_{cloud_provider.upper()} in configuration."
                 self.log_message("ERROR", error_msg)
                 raise Exception(error_msg)
             
+            # Determine organization_id for Pulumi
+            organization_id = None
+            business_unit_id = None
+            if deployment:
+                business_unit_id = str(deployment.business_unit_id) if deployment.business_unit_id else None
+                if deployment.user:
+                    organization_id = str(deployment.user.organization_id)
+                elif deployment.business_unit:
+                    organization_id = str(deployment.business_unit.organization_id)
+            
             self.log_message("INFO", f"ESC environment configured: {esc_env} - using automatic credential management for destroy")
             self.log_message("INFO", f"Executing Pulumi destroy for stack: {deployment.stack_name}")
-            # Run Pulumi destroy
-            result = asyncio.run(pulumi_service.destroy_stack(
-                plugin_path=extract_path,
-                stack_name=deployment.stack_name,
-                credentials=None,
-                cloud_provider=deployment.cloud_provider,
-                on_output=on_output
-            ))
+            
+            # Check if we can use Pulumi Deployments API (GitOps flow)
+            use_deployments_api = (
+                deployment.git_branch and 
+                plugin_version.git_repo_url and
+                settings.PULUMI_ACCESS_TOKEN and
+                settings.PULUMI_ORG
+            )
+            
+            if use_deployments_api:
+                # Use Pulumi Deployments API for destroy
+                self.log_message("INFO", f"Using Pulumi Deployments API (Cloud execution) for destroy")
+                self.log_message("INFO", f"Git source: {plugin_version.git_repo_url} @ {deployment.git_branch}")
+                
+                # Get Pulumi access token (prefer org config, fallback to system)
+                pulumi_access_token = settings.PULUMI_ACCESS_TOKEN
+                pulumi_org = settings.PULUMI_ORG
+                
+                if organization_id:
+                    from app.utils.config_helper import get_config_from_auth_service
+                    org_token = asyncio.run(get_config_from_auth_service(
+                        organization_id, "PULUMI_ACCESS_TOKEN", business_unit_id
+                    ))
+                    org_org = asyncio.run(get_config_from_auth_service(
+                        organization_id, "PULUMI_ORG", business_unit_id
+                    ))
+                    if org_token:
+                        pulumi_access_token = org_token
+                    if org_org:
+                        pulumi_org = org_org
+                
+                # Trigger destroy via Pulumi Cloud
+                deployment_result = asyncio.run(pulumi_deployments_service.destroy_deployment(
+                    organization=pulumi_org,
+                    project=deployment.plugin_id,
+                    stack=deployment.stack_name,
+                    git_repo_url=plugin_version.git_repo_url,
+                    git_branch=deployment.git_branch,
+                    esc_environment=esc_env,
+                    access_token=pulumi_access_token,
+                    on_output=on_output,
+                ))
+                
+                # Convert DeploymentResult to standard result format
+                if deployment_result.status == PulumiDeploymentStatus.SUCCEEDED:
+                    result = {
+                        "status": "success",
+                        "summary": {"pulumi_deployment_id": deployment_result.deployment_id},
+                        "message": "Infrastructure destroyed via Pulumi Cloud"
+                    }
+                else:
+                    result = {
+                        "status": "failed",
+                        "error": deployment_result.error or "Destroy failed"
+                    }
+            else:
+                # Fallback to local Pulumi execution
+                self.log_message("INFO", f"Using local Pulumi execution for destroy")
+                result = asyncio.run(pulumi_service.destroy_stack(
+                    plugin_path=extract_path,
+                    stack_name=deployment.stack_name,
+                    credentials=None,
+                    cloud_provider=deployment.cloud_provider,
+                    on_output=on_output,
+                    organization_id=organization_id,
+                    business_unit_id=business_unit_id
+                ))
         
         self.log_message("INFO", f"Pulumi destroy completed with status: {result.get('status', 'unknown')}")
         
@@ -896,6 +1164,7 @@ class InfrastructureDestroyTask:
             if deletion_job:
                 deletion_job.status = JobStatus.FAILED
                 deletion_job.finished_at = datetime.now(timezone.utc)
+                deletion_job.error_message = str(error_msg)
                 self.db.add(deletion_job)
                 self.db.commit()
             
@@ -1006,9 +1275,21 @@ class InfrastructureDestroyTask:
         """Delete GitOps branch from GitHub"""
         if deployment.git_branch and plugin_version.git_repo_url:
             try:
-                github_token = settings.GITHUB_TOKEN if hasattr(settings, 'GITHUB_TOKEN') else ""
+                # Determine organization_id for Git token lookup
+                organization_id = None
+                business_unit_id = None
+                if deployment:
+                    business_unit_id = str(deployment.business_unit_id) if deployment.business_unit_id else None
+                    if deployment.user:
+                        organization_id = str(deployment.user.organization_id)
+                    elif deployment.business_unit:
+                        organization_id = str(deployment.business_unit.organization_id)
+                
+                # Get GitHub token specifically for this org
+                github_token = git_service.get_github_token(organization_id, business_unit_id)
+
                 if not github_token:
-                    self.log_message("WARNING", "GITHUB_TOKEN not configured, cannot delete branch via API")
+                    self.log_message("WARNING", "GITHUB_TOKEN not configured for organization, cannot delete branch via API")
                     logger.warning("GITHUB_TOKEN not configured, skipping branch deletion")
                 else:
                     self.log_message("INFO", f"Deleting deployment branch '{deployment.git_branch}' from GitHub repository '{plugin_version.git_repo_url}' (after infrastructure removal)")

@@ -109,11 +109,18 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin123!@#}
 
+      # Encryption
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
       # Debug
       DEBUG: ${DEBUG:-true}
     ports:
       - "50056:50051" # gRPC (for debugging) - Changed external port to 50056 to avoid conflict
       # REST adapter on port 8000 (internal only, accessed via Kong)
+    volumes:
+      # Mount code for development - changes are picked up automatically
+      - ./backend/auth-service/app:/app/app
+      - ./backend/auth-service/proto:/app/proto
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,6 +174,9 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GIT_WORK_DIR: /app/storage/git-repos
 
+      # Security
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
       # Debug
       DEBUG: ${DEBUG:-true}
     ports:
@@ -174,6 +184,7 @@ services:
       # REST adapter on port 8000 (internal only, accessed via Kong)
     volumes:
       - backend_storage:/app/storage
+      - ./backend/plugin-service:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -227,6 +238,7 @@ services:
       # REST adapter on port 8000 (internal only, accessed via Kong)
     volumes:
       - backend_storage:/app/storage
+      - ./backend/worker-service:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -276,6 +288,7 @@ services:
       DEBUG: ${DEBUG:-true}
     volumes:
       - backend_storage:/app/storage
+      - ./backend/worker-service:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -375,6 +388,9 @@ services:
         condition: service_started
     networks:
       - foundry-idp-network
+    volumes:
+      - ./backend/deployment-service:/app
+      - ./backend/proto:/app/main_proto:ro
     restart: unless-stopped
 
   kong:
@@ -383,7 +399,7 @@ services:
       dockerfile: Dockerfile
     container_name: foundry-idp-kong
     ports:
-      - "8000:8000" # API Gateway (main entry point for frontend)
+      - "80:8000" # API Gateway (main entry point for frontend)
       - "8001:8001" # Admin API
     environment:
       KONG_DATABASE: off
@@ -413,12 +429,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://localhost:8000
+        VITE_API_URL: ""
     container_name: foundry-idp-frontend
     ports:
       - "3000:80"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_API_URL=
     depends_on:
       kong:
         condition: service_started

@@ -123,6 +123,8 @@ message DeploymentResponse {
   string updated_at = 29;
   repeated DeploymentTagResponse tags = 30;
   string job_id = 31;  // Latest job ID for this deployment
+  string user_email = 32;
+  string user_name = 33;
 }
 
 message ListDeploymentsResponse {
@@ -155,6 +157,8 @@ message DeploymentHistoryResponse {
   string created_at = 8;
   string created_by = 9;
   string description = 10;
+  string user_email = 11;
+  string user_name = 12;
 }
 
 message ListDeploymentHistoryResponse {

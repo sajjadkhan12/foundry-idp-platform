@@ -36,8 +36,30 @@ async def user_to_response(
     org = await get_user_organization(user, db)
     org_domain = get_organization_domain(org)
     
-    # Get roles from Casbin
-    user_roles = enforcer.get_roles_for_user(str(user.id))
+    # Get roles from Casbin - try with domain first, then without
+    user_roles = []
+    try:
+        # Try getting roles with domain
+        if hasattr(enforcer, 'get_roles_for_user'):
+            # Try with domain if enforcer supports it
+            try:
+                domain_roles = enforcer.get_roles_for_user(str(user.id), org_domain)
+                if domain_roles:
+                    user_roles.extend(domain_roles)
+            except (TypeError, AttributeError):
+                pass
+            # Also get roles without domain (platform-level)
+            try:
+                platform_roles = enforcer.get_roles_for_user(str(user.id))
+                if platform_roles:
+                    user_roles.extend(platform_roles)
+            except (TypeError, AttributeError):
+                pass
+    except Exception:
+        pass
+    
+    # Remove duplicates
+    user_roles = list(set(user_roles))
     
     # Filter to valid roles only
     valid_role_names = await get_valid_role_names(db)
@@ -68,5 +90,7 @@ async def user_to_response(
         "is_admin": user_is_admin,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "roles": user_roles,
+        "organization_id": str(user.organization_id) if user.organization_id else None,
+        "organization_name": org.name if org else None,
         "active_business_unit_id": str(user.active_business_unit_id) if user.active_business_unit_id else None
     }

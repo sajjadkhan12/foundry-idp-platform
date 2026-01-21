@@ -96,25 +96,25 @@ async def init_admin():
                 print("  - At least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)")
                 return
             
-            # Create or get default organization
+            # Create or get foundry organization (platform owner)
             org_result = await db.execute(
-                select(Organization).where(Organization.slug == "default")
+                select(Organization).where(Organization.slug == "foundry")
             )
             org = org_result.scalar_one_or_none()
             
             if not org:
                 org = Organization(
-                    name="Default Organization",
-                    slug="default",
-                    description="Default organization for the platform",
+                    name="Foundry",
+                    slug="foundry",
+                    description="Platform owner organization - manages the platform and creates other organizations",
                     is_active=True
                 )
                 db.add(org)
                 await db.commit()
                 await db.refresh(org)
-                print(f"Created organization: {org.name} (slug: {org.slug})")
+                print(f"Created foundry organization: {org.name} (slug: {org.slug})")
             else:
-                print(f"Using existing organization: {org.name} (slug: {org.slug})")
+                print(f"Using existing foundry organization: {org.name} (slug: {org.slug})")
             
             # Hash password
             hashed_password = hash_password(ADMIN_PASSWORD)

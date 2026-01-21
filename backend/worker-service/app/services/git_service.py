@@ -24,6 +24,30 @@ class GitService:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.github_token = settings.GITHUB_TOKEN if hasattr(settings, 'GITHUB_TOKEN') else ""
     
+    def get_github_token(self, organization_id: Optional[str] = None, business_unit_id: Optional[str] = None) -> str:
+        """
+        Get GitHub token with fallback: BU -> Org -> System
+        
+        Args:
+            organization_id: Optional organization ID
+            business_unit_id: Optional business unit ID
+        
+        Returns:
+            GitHub token string
+        """
+        if organization_id:
+            from app.utils.config_helper import get_config_from_auth_service_sync
+            token = get_config_from_auth_service_sync(organization_id, "GITHUB_TOKEN", business_unit_id)
+            if token:
+                return token
+        
+            # If organization_id was provided but no token found, do NOT fallback to system default
+            logger.warning(f"No GITHUB_TOKEN configured for organization {organization_id}")
+            return ""
+        
+        # Fallback to system default only if NO organization_id was provided
+        return self.github_token
+    
     def _get_authenticated_url(self, repo_url: str, token: Optional[str] = None) -> str:
         """Convert repo URL to authenticated HTTPS URL if token is available"""
         auth_token = token or self.github_token
@@ -39,11 +63,14 @@ class GitService:
             # Convert SSH to HTTPS with token
             url = repo_url.replace("git@github.com:", f"https://{auth_token}@github.com/")
             return url
+        elif not repo_url.startswith("http") and not repo_url.startswith("git@") and "/" in repo_url:
+            # Handle short format "org/repo"
+            return f"https://{auth_token}@github.com/{repo_url}"
         else:
             # Assume it's already authenticated or public
             return repo_url
     
-    def clone_repository(self, repo_url: str, branch: str, target_dir: Path) -> Path:
+    def clone_repository(self, repo_url: str, branch: str, target_dir: Path, token: Optional[str] = None) -> Path:
         """
         Clone a specific branch from a Git repository
         
@@ -51,6 +78,7 @@ class GitService:
             repo_url: GitHub repository URL
             branch: Branch name to clone
             target_dir: Directory to clone into
+            token: Optional GitHub token for authentication
             
         Returns:
             Path to cloned repository
@@ -62,7 +90,7 @@ class GitService:
             target_dir.mkdir(parents=True, exist_ok=True)
             
             # Get authenticated URL
-            auth_url = self._get_authenticated_url(repo_url)
+            auth_url = self._get_authenticated_url(repo_url, token)
             
             logger.info(f"Cloning repository {repo_url} branch {branch} to {target_dir}")
             
@@ -347,7 +375,8 @@ class GitService:
         repo_url: str,
         branch: str,
         source_dir: Path,
-        commit_message: str = "Initial plugin upload"
+        commit_message: str = "Initial plugin upload",
+        token: Optional[str] = None
     ) -> None:
         """
         Initialize repository, create branch, copy files, and push to GitHub
@@ -370,7 +399,7 @@ class GitService:
             temp_repo_dir = Path(tempfile.mkdtemp(prefix="plugin_upload_"))
             
             # Clone repository (or initialize if empty)
-            auth_url = self._get_authenticated_url(repo_url)
+            auth_url = self._get_authenticated_url(repo_url, token)
             try:
                 # Try to clone existing repo
                 repo = Repo.clone_from(auth_url, str(temp_repo_dir), depth=1)

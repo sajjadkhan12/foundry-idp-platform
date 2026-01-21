@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutGrid, Server, User, Bell, LogOut, Settings, Menu, X, Sun, Moon, ChevronRight, PieChart, Activity, Book, Users, Shield, Upload, Lock, ChevronDown, Package, List, FileText, Building2 } from 'lucide-react';
+import { LayoutGrid, Server, User, Bell, LogOut, Settings, Menu, X, Sun, Moon, ChevronRight, PieChart, Activity, Book, Users, Shield, Upload, Lock, ChevronDown, Package, List, FileText, Building2, Crown } from 'lucide-react';
 import { useApp } from '../App';
 import { useAuth } from '../contexts/AuthContext';
 import { NotificationCenter } from './NotificationCenter';
@@ -15,7 +15,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useApp();
-  const { user, logout, isAdmin, isOwner, businessUnits, hasPermission, activeBusinessUnit } = useAuth();
+  const { user, logout, isAdmin, isSuperAdmin, isOwner, businessUnits, hasPermission, activeBusinessUnit } = useAuth();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -74,7 +74,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     </svg>
   );
 
-    const SidebarContent = () => {
+  const SidebarContent = () => {
 
     const NavItem = ({ item, isSubItem = false, isFlyout = false }: { item: any; isSubItem?: boolean; isFlyout?: boolean }) => {
       const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
@@ -101,7 +101,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
       <>
         <div className="flex items-center gap-3 px-6 h-20 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
           <FoundryLogo />
-          <span className="font-bold text-2xl tracking-tight text-gray-900 dark:text-white font-sans">FOUNDRY</span>
+          <span className="font-bold text-2xl tracking-tight text-gray-900 dark:text-white font-sans uppercase">
+            {user?.organization_name || 'FOUNDRY'}
+          </span>
         </div>
 
         <div className="flex-1 overflow-y-auto py-6 px-3 scrollbar-hide">
@@ -134,6 +136,14 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               <>
                 <div className="my-2 border-t border-gray-200 dark:border-gray-700 mx-3" />
                 <NavItem item={{ name: 'Settings', path: '/settings', icon: Settings }} />
+              </>
+            )}
+
+            {isSuperAdmin && (
+              <>
+                <div className="my-2 border-t border-gray-200 dark:border-gray-700 mx-3" />
+                <h3 className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Super Admin</h3>
+                <NavItem item={{ name: 'Organizations', path: '/super-admin/organizations', icon: Crown }} />
               </>
             )}
 

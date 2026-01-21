@@ -6,12 +6,15 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, timezone
 import uuid
 import re
+import logging
 
 from app.models.rbac import User, RefreshToken, Organization
 from app.services.security_service import security_service
 from app.core.organization import get_user_organization, get_organization_domain
 from app.core.casbin import get_enforcer
 from app.utils.response_helpers import user_to_response
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -38,7 +41,14 @@ class AuthService:
             )
         user = result.scalars().first()
         
-        if not user or not security_service.verify_password(password, user.hashed_password):
+        if not user:
+            logger.warning(f"Login attempt with non-existent identifier: {identifier}")
+            raise ValueError("Incorrect email/username or password")
+        
+        # Verify password with detailed logging
+        password_valid = security_service.verify_password(password, user.hashed_password)
+        if not password_valid:
+            logger.warning(f"Password verification failed for user: {user.email} (ID: {user.id})")
             raise ValueError("Incorrect email/username or password")
         
         if not user.is_active:
@@ -48,8 +58,13 @@ class AuthService:
         access_token = security_service.create_access_token(data={"sub": str(user.id)})
         refresh_token = security_service.create_refresh_token(data={"sub": str(user.id)})
         
+        # Get organization BEFORE committing refresh token (to avoid lazy loading issues)
+        org = await get_user_organization(user, db)
+        org_domain = get_organization_domain(org)
+        
         # Store refresh token
         user_id_str = str(user.id)
+        user_id = user.id  # Store user ID before commit
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -69,9 +84,15 @@ class AuthService:
                 else:
                     raise ValueError("Failed to generate unique refresh token")
         
+        # Re-query user with relationships after commit to avoid lazy loading issues
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.organization))
+            .where(User.id == user_id)
+        )
+        user = result.scalar_one()
+        
         # Get user response with roles
-        org = await get_user_organization(user, db)
-        org_domain = get_organization_domain(org)
         enforcer = get_enforcer()
         enforcer.set_org_domain(org_domain)
         user_response = await user_to_response(user, enforcer, db, include_admin_check=True)

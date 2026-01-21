@@ -10,11 +10,22 @@ from app.audit_client import audit_client
 class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
     """gRPC servicer for deployment management operations"""
     
+    def _get_token_from_context(self, context):
+        """Extract Authorization token from gRPC metadata"""
+        metadata = context.invocation_metadata()
+        for key, value in metadata:
+            if key.lower() == 'authorization':
+                if value.lower().startswith('bearer '):
+                    return value[7:]
+                return value
+        return None
+    
     async def CreateDeployment(self, request, context):
         """Create deployment"""
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                token = self._get_token_from_context(context)
                 inputs = json.loads(request.inputs) if request.inputs else {}
                 deployment = await deployment_service.create_deployment(
                     request.name,
@@ -27,7 +38,8 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                     inputs,
                     request.cost_center if request.cost_center else None,
                     request.project_code if request.project_code else None,
-                    db
+                    db,
+                    token=token
                 )
                 
                 # Log audit event (fire and forget)
@@ -43,7 +55,8 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                         "deployment_type": request.deployment_type
                     },
                     status="success",
-                    business_unit_id=request.business_unit_id if request.business_unit_id else None
+                    business_unit_id=request.business_unit_id if request.business_unit_id else None,
+                    token=token
                 ))
                 
                 return self._dict_to_deployment_response(deployment)
@@ -82,6 +95,7 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                token = self._get_token_from_context(context)
                 inputs = json.loads(request.inputs) if request.inputs else None
                 deployment = await deployment_service.update_deployment(
                     request.deployment_id,
@@ -92,7 +106,8 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                     request.project_code if request.project_code else None,
                     request.status if request.status else None,
                     request.user_id if request.user_id else None,
-                    db
+                    db,
+                    token=token
                 )
                 
                 # Log audit event (fire and forget)
@@ -108,7 +123,8 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                         "inputs_changed": inputs is not None
                     },
                     status="success",
-                    business_unit_id=deployment.get("business_unit_id")
+                    business_unit_id=deployment.get("business_unit_id"),
+                    token=token
                 ))
                 
                 return self._dict_to_deployment_response(deployment)
@@ -126,10 +142,12 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                token = self._get_token_from_context(context)
                 result = await deployment_service.delete_deployment(
                     request.deployment_id,
                     request.user_email if request.user_email else "system",
-                    db
+                    db,
+                    token=token
                 )
                 
                 # Log audit event (fire and forget)
@@ -142,7 +160,8 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                         "job_id": result.get("job_id"),
                         "task_id": result.get("task_id")
                     },
-                    status="success"
+                    status="success",
+                    token=token
                 ))
                 
                 # Return response with task_id and job_id
@@ -167,6 +186,12 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from metadata if available
+                organization_id = None
+                metadata = dict(context.invocation_metadata())
+                if 'organization-id' in metadata:
+                    organization_id = metadata['organization-id']
+                
                 result = await deployment_service.list_deployments(
                     request.search if request.search else None,
                     request.status if request.status else None,
@@ -176,9 +201,10 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                     request.tags if request.tags else None,
                     request.user_id if request.user_id else None,
                     request.business_unit_id if request.business_unit_id else None,
-                    request.skip if request.skip > 0 else 0,
-                    request.limit if request.limit > 0 else 50,
-                    db
+                    organization_id=organization_id,
+                    skip=request.skip if request.skip > 0 else 0,
+                    limit=request.limit if request.limit > 0 else 50,
+                    db=db
                 )
                 return deployment_pb2.ListDeploymentsResponse(
                     deployments=[self._dict_to_deployment_response(d) for d in result["deployments"]],
@@ -223,7 +249,9 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
             project_code=deployment_dict.get("project_code", ""),
             created_at=deployment_dict["created_at"],
             updated_at=deployment_dict["updated_at"],
-            job_id=deployment_dict.get("job_id", "")
+            job_id=deployment_dict.get("job_id", ""),
+            user_email=deployment_dict.get("user_email", ""),
+            user_name=deployment_dict.get("user_name", "")
         )
         
         if include_tags and "tags" in deployment_dict:
@@ -268,7 +296,9 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                             job_id=h["job_id"] or "",
                             created_at=h["created_at"],
                             created_by=h["created_by"],
-                            description=h["description"]
+                            description=h["description"],
+                            user_email=h.get("user_email", ""),
+                            user_name=h.get("user_name", "")
                         )
                         for h in result["history"]
                     ],
@@ -303,7 +333,9 @@ class DeploymentServicer(deployment_pb2_grpc.DeploymentServiceServicer):
                     job_id=result["job_id"] or "",
                     created_at=result["created_at"],
                     created_by=result["created_by"],
-                    description=result["description"]
+                    description=result["description"],
+                    user_email=result.get("user_email", ""),
+                    user_name=result.get("user_name", "")
                 )
             except ValueError as e:
                 context.set_code(grpc.StatusCode.NOT_FOUND if "not found" in str(e).lower() else grpc.StatusCode.INVALID_ARGUMENT)

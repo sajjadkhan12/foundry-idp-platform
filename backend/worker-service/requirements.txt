@@ -9,10 +9,9 @@ protobuf==4.25.1
 pydantic==2.9.2
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
-pulumi==3.115.0
-pulumi-aws>=6.0.0
-pulumi-gcp==6.0.0
-pulumi-azure==5.0.0
+# Note: We use Pulumi Deployments API instead of local execution
+# This saves ~1.5GB in container size and enables unlimited concurrent deployments
+httpx>=0.25.0
 gitpython==3.1.40
 pyyaml==6.0.1
 cryptography==42.0.5
@@ -20,4 +19,4 @@ requests
 celery==5.3.4
 redis==5.0.1
 Jinja2==3.1.2
-
+pynacl==1.5.0

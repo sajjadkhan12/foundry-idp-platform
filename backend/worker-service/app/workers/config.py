@@ -19,9 +19,8 @@ def create_celery_app() -> Celery:
         backend=settings.CELERY_RESULT_BACKEND
     )
     
-    # Use 'solo' pool on macOS to avoid fork() issues
-    # On Linux/Production, use 'prefork' or 'gevent' for better performance
-    worker_pool = 'solo' if platform.system() == 'Darwin' else 'prefork'
+    # Use 'solo' pool for stability with gRPC (avoids fork() issues)
+    worker_pool = 'solo'
     
     celery_app.conf.update(
         task_serializer="json",

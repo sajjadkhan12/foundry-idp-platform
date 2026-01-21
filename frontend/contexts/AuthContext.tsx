@@ -32,6 +32,8 @@ interface User {
     is_admin?: boolean;  // Whether user has platform admin permissions (from backend)
     avatar_url?: string;
     created_at?: string;
+    organization_id?: string;
+    organization_name?: string;
 }
 
 interface BusinessUnit {
@@ -51,6 +53,7 @@ interface AuthContextType {
     logout: () => Promise<void>;
     isAuthenticated: boolean;
     isAdmin: boolean;
+    isSuperAdmin: boolean;
     businessUnits: BusinessUnit[];
     activeBusinessUnit: BusinessUnit | null;
     hasBusinessUnitAccess: boolean;
@@ -264,6 +267,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Refresh token is handled via HTTP-only cookie
         setUser(response.user);
         // Business units will be fetched in useEffect
+        // Return response for caller to use
+        return response;
     };
 
     const logout = async () => {
@@ -278,6 +283,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // No hardcoded role checks - fully permission-based
     const isAdmin = user?.is_admin || false;
     
+    // Check if user is super admin (has super-admin role, platform-admin role, or super:* permissions)
+    const isSuperAdmin = user?.roles?.some(role => {
+        const roleLower = role.toLowerCase();
+        return roleLower === 'super-admin' || roleLower === 'platform-admin';
+    }) || Array.from(userPermissions).some(perm => perm.startsWith('super:'));
+    
     // Admins have access even without business units, regular users need business unit access
     const hasBusinessUnitAccess = isAdmin || businessUnits.length > 0;
     // Check if user can manage members in any business unit (permission-based, not role-name-based)
@@ -285,6 +296,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     // Helper function to check if user has a specific permission
     const hasPermission = (permission: string): boolean => {
+        if (isSuperAdmin) return true; // Super admins have all permissions
         if (isAdmin) return true; // Admins have all permissions
         const normalizedPermission = permission.toLowerCase().trim();
         return userPermissions.has(normalizedPermission);
@@ -299,6 +311,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 logout,
                 isAuthenticated: !!user,
                 isAdmin,
+                isSuperAdmin,
                 businessUnits,
                 activeBusinessUnit,
                 hasBusinessUnitAccess,

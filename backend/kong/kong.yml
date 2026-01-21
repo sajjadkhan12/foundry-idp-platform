@@ -48,6 +48,7 @@ services:
           - /api/v1/business-units
           - /api/v1/business-unit-groups
           - /api/v1/permissions
+          - /api/v1/configurations
           - /api/admin/credentials
         strip_path: false
         preserve_host: true
@@ -153,7 +154,7 @@ services:
           max_age: 3600
       - name: request-size-limiting
         config:
-          allowed_payload_size: 100  # 100 MB
+          allowed_payload_size: 100 # 100 MB
 
   # Deployment Service
   - name: deployment-service
@@ -218,3 +219,11 @@ services:
             - Origin
           credentials: true
           max_age: 3600
+  # Frontend
+  - name: frontend
+    url: http://frontend:80
+    routes:
+      - name: frontend-route
+        paths:
+          - /
+        strip_path: false

@@ -8,9 +8,8 @@ import uuid
 
 async def get_user_organization(user: User, db: AsyncSession) -> Organization:
     """Get the organization for a user."""
-    if hasattr(user, 'organization') and user.organization:
-        return user.organization
-    
+    # Always query the organization directly - never access user.organization 
+    # as it triggers lazy loading in async context
     result = await db.execute(
         select(Organization).where(Organization.id == user.organization_id)
     )

@@ -12,10 +12,26 @@ class CredentialServicer(auth_pb2_grpc.CredentialServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from metadata or request
+                organization_id = None
+                if hasattr(request, 'organization_id') and request.organization_id:
+                    organization_id = request.organization_id
+                else:
+                    # Try to get from metadata
+                    metadata = dict(context.invocation_metadata())
+                    if 'organization-id' in metadata:
+                        organization_id = metadata['organization-id']
+                
+                if not organization_id:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details("organization_id is required")
+                    return auth_pb2.CredentialResponse()
+                
                 cred = await credential_service.create_credential(
                     request.name,
                     request.provider,
                     request.credentials,
+                    organization_id,
                     db
                 )
                 return auth_pb2.CredentialResponse(
@@ -39,11 +55,26 @@ class CredentialServicer(auth_pb2_grpc.CredentialServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from metadata or request
+                organization_id = None
+                if hasattr(request, 'organization_id') and request.organization_id:
+                    organization_id = request.organization_id
+                else:
+                    metadata = dict(context.invocation_metadata())
+                    if 'organization-id' in metadata:
+                        organization_id = metadata['organization-id']
+                
+                if not organization_id:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details("organization_id is required")
+                    return auth_pb2.CredentialResponse()
+                
                 cred_id = int(request.credential_id)
                 cred = await credential_service.update_credential(
                     cred_id,
                     request.name if request.name else None,
                     request.credentials if request.credentials else None,
+                    organization_id,
                     db
                 )
                 return auth_pb2.CredentialResponse(
@@ -67,9 +98,24 @@ class CredentialServicer(auth_pb2_grpc.CredentialServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from metadata or request
+                organization_id = None
+                if hasattr(request, 'organization_id') and request.organization_id:
+                    organization_id = request.organization_id
+                else:
+                    metadata = dict(context.invocation_metadata())
+                    if 'organization-id' in metadata:
+                        organization_id = metadata['organization-id']
+                
+                if not organization_id:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details("organization_id is required")
+                    return auth_pb2.Empty()
+                
                 cred_id = int(request.credential_id)
                 await credential_service.delete_credential(
                     cred_id,
+                    organization_id,
                     db
                 )
                 return auth_pb2.Empty()
@@ -87,9 +133,24 @@ class CredentialServicer(auth_pb2_grpc.CredentialServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from metadata or request
+                organization_id = None
+                if hasattr(request, 'organization_id') and request.organization_id:
+                    organization_id = request.organization_id
+                else:
+                    metadata = dict(context.invocation_metadata())
+                    if 'organization-id' in metadata:
+                        organization_id = metadata['organization-id']
+                
+                if not organization_id:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details("organization_id is required")
+                    return auth_pb2.CredentialResponse()
+                
                 cred_id = int(request.credential_id)
                 cred = await credential_service.get_credential(
                     cred_id,
+                    organization_id,
                     db
                 )
                 return auth_pb2.CredentialResponse(
@@ -113,7 +174,21 @@ class CredentialServicer(auth_pb2_grpc.CredentialServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
-                creds = await credential_service.list_credentials(db)
+                # Get organization_id from metadata or request
+                organization_id = None
+                if hasattr(request, 'organization_id') and request.organization_id:
+                    organization_id = request.organization_id
+                else:
+                    metadata = dict(context.invocation_metadata())
+                    if 'organization-id' in metadata:
+                        organization_id = metadata['organization-id']
+                
+                if not organization_id:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details("organization_id is required")
+                    return auth_pb2.ListCredentialsResponse()
+                
+                creds = await credential_service.list_credentials(organization_id, db)
                 return auth_pb2.ListCredentialsResponse(
                     credentials=[
                         auth_pb2.CredentialResponse(

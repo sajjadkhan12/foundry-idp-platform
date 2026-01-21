@@ -17,18 +17,31 @@ except ImportError:
 class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
     """gRPC servicer for plugin operations"""
     
+    def _get_token_from_context(self, context):
+        """Extract Authorization token from gRPC metadata"""
+        metadata = context.invocation_metadata()
+        for key, value in metadata:
+            if key.lower() == 'authorization':
+                if value.lower().startswith('bearer '):
+                    return value[7:]
+                return value
+        return None
+    
     async def UploadPlugin(self, request, context):
         """Upload a plugin ZIP file"""
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                token = self._get_token_from_context(context)
                 result = await plugin_service.upload_plugin(
                     request.file_content,
                     request.filename,
                     request.git_repo_url if request.git_repo_url else None,
                     request.git_branch if request.git_branch else None,
                     request.user_id,
-                    db
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db,
+                    token=token
                 )
                 return plugin_pb2.PluginVersionResponse(
                     id=result["id"],
@@ -56,6 +69,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                token = self._get_token_from_context(context)
                 result = await plugin_service.upload_microservice_template(
                     request.plugin_id,
                     request.name,
@@ -65,7 +79,9 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.template_path,
                     request.author if request.author else None,
                     request.user_id,
-                    db
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db,
+                    token=token
                 )
                 return plugin_pb2.PluginVersionResponse(
                     id=result["id"],
@@ -96,6 +112,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                 inputs = json.loads(request.inputs) if request.inputs else {}
                 tags = json.loads(request.tags) if request.tags else {}
                 
+                token = self._get_token_from_context(context)
                 result = await plugin_service.provision_plugin(
                     request.plugin_id,
                     request.version,
@@ -108,8 +125,9 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.user_id,
                     request.user_email if request.user_email else request.user_id,
                     request.business_unit_id if request.business_unit_id else None,
-                    request.organization_id if request.organization_id else None,
-                    db
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db,
+                    token=token
                 )
                 return plugin_pb2.ProvisionResponse(
                     job_id=result["job_id"],
@@ -267,10 +285,13 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                token = self._get_token_from_context(context)
                 result = await plugin_service.list_plugins(
                     request.user_id,
                     request.business_unit_id if request.business_unit_id else None,
-                    db
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db,
+                    token=token
                 )
                 return plugin_pb2.ListPluginsResponse(
                     plugins=[
@@ -321,6 +342,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.plugin_id,
                     request.user_id,
                     request.business_unit_id if request.business_unit_id else None,
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
                     db
                 )
                 return plugin_pb2.PluginResponse(
@@ -366,7 +388,12 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
-                await plugin_service.delete_plugin(request.plugin_id, request.user_id, db)
+                await plugin_service.delete_plugin(
+                    request.plugin_id,
+                    request.user_id,
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db
+                )
                 return plugin_pb2.Empty()
             except ValueError as e:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
@@ -382,7 +409,12 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
-                await plugin_service.lock_plugin(request.plugin_id, request.user_id, db)
+                await plugin_service.lock_plugin(
+                    request.plugin_id,
+                    request.user_id,
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db
+                )
                 return plugin_pb2.Empty()
             except ValueError as e:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
@@ -398,7 +430,12 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
-                await plugin_service.unlock_plugin(request.plugin_id, request.user_id, db)
+                await plugin_service.unlock_plugin(
+                    request.plugin_id,
+                    request.user_id,
+                    request.organization_id if request.organization_id and request.organization_id.strip() else None,
+                    db
+                )
                 return plugin_pb2.Empty()
             except ValueError as e:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
@@ -474,6 +511,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
     
     async def RequestPluginAccess(self, request, context):
         """Request access to a plugin"""
+        token = self._get_token_from_context(context)
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
@@ -482,7 +520,8 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.user_id,
                     request.business_unit_id if request.business_unit_id else None,
                     request.note if request.note else None,
-                    db
+                    db,
+                    token=token
                 )
                 return plugin_pb2.PluginAccessRequestResponse(
                     id=result["id"],
@@ -508,6 +547,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
     
     async def GrantPluginAccess(self, request, context):
         """Grant plugin access"""
+        token = self._get_token_from_context(context)
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
@@ -516,7 +556,8 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.user_id,
                     request.granted_by_user_id,
                     request.business_unit_id if request.business_unit_id else None,
-                    db
+                    db,
+                    token=token
                 )
                 return plugin_pb2.PluginAccessResponse(
                     id=str(result["id"]),
@@ -539,6 +580,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
     
     async def RejectPluginAccess(self, request, context):
         """Reject plugin access request"""
+        token = self._get_token_from_context(context)
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
@@ -546,7 +588,8 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.plugin_id,
                     request.user_id,
                     request.rejected_by_user_id,
-                    db
+                    db,
+                    token=token
                 )
                 return plugin_pb2.Empty()
             except ValueError as e:
@@ -560,6 +603,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
     
     async def RevokePluginAccess(self, request, context):
         """Revoke plugin access"""
+        token = self._get_token_from_context(context)
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
@@ -567,7 +611,8 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.plugin_id,
                     request.user_id,
                     request.revoked_by_user_id,
-                    db
+                    db,
+                    token=token
                 )
                 return plugin_pb2.Empty()
             except ValueError as e:
@@ -581,6 +626,7 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
     
     async def RestorePluginAccess(self, request, context):
         """Restore plugin access"""
+        token = self._get_token_from_context(context)
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
@@ -588,7 +634,8 @@ class PluginServicer(plugin_pb2_grpc.PluginServiceServicer):
                     request.plugin_id,
                     request.user_id,
                     request.restored_by_user_id,
-                    db
+                    db,
+                    token=token
                 )
                 return plugin_pb2.Empty()
             except ValueError as e:

@@ -1,6 +1,6 @@
 """Notification model"""
 import uuid
-from sqlalchemy import Column, String, Boolean, DateTime
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
@@ -24,6 +24,7 @@ class Notification(Base):
     # Note: Foreign key constraint exists in database schema
     # We don't define it here to avoid SQLAlchemy validation issues
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String, nullable=False)
     message = Column(String, nullable=False)
     type = Column(String, default=NotificationType.INFO)

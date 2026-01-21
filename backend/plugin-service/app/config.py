@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: str = ""
     GIT_WORK_DIR: str = "/app/storage/git-repos"
     
+    # Security
+    ENCRYPTION_KEY: str = ""
+    
     class Config:
         env_file = str(Path(__file__).parent.parent / ".env")
         case_sensitive = True

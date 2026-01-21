@@ -53,6 +53,9 @@ export interface Deployment {
   last_update_job_id?: string;
   last_update_error?: string;
   last_update_attempted_at?: string;
+  // Cost fields
+  estimated_monthly_cost?: number | string;
+  actual_monthly_cost?: number | string;
 }
 
 export interface DeploymentHistory {

@@ -12,12 +12,15 @@ class RoleServicer(auth_pb2_grpc.RoleServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from request if provided (for gRPC calls)
+                organization_id = request.organization_id if hasattr(request, 'organization_id') and request.organization_id else None
                 role = await role_service.create_role(
                     request.name,
                     request.description if request.description else None,
                     request.is_platform_role,
                     db,
-                    permissions=list(request.permissions) if request.permissions else []
+                    permissions=list(request.permissions) if request.permissions else [],
+                    organization_id=organization_id
                 )
                 return auth_pb2.RoleResponse(
                     id=role["id"],
@@ -110,10 +113,15 @@ class RoleServicer(auth_pb2_grpc.RoleServiceServicer):
         from app.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             try:
+                # Get organization_id from request if provided
+                organization_id = request.organization_id if hasattr(request, 'organization_id') and request.organization_id else None
+                include_system_roles = request.include_system_roles if hasattr(request, 'include_system_roles') else False
                 # In proto3, bool fields don't support HasField, so we use the value directly
                 roles = await role_service.list_roles(
                     request.platform_roles_only,
-                    db
+                    db,
+                    organization_id=organization_id,
+                    include_system_roles=include_system_roles
                 )
                 return auth_pb2.ListRolesResponse(
                     roles=[

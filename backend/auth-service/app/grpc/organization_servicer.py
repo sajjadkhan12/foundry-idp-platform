@@ -178,3 +178,64 @@ class OrganizationServicer(auth_pb2_grpc.OrganizationServiceServicer):
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(f"Internal error: {str(e)}")
                 return auth_pb2.OrganizationResponse()
+    
+    async def CreateOrganizationWithAdmin(self, request, context):
+        """Create organization with admin user"""
+        from app.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            try:
+                result = await organization_service.create_organization_with_admin(
+                    name=request.name,
+                    slug=request.slug,
+                    description=request.description if request.description else None,
+                    admin_email=request.admin_email,
+                    admin_username=request.admin_username,
+                    admin_password=request.admin_password,
+                    admin_full_name=request.admin_full_name if request.admin_full_name else None,
+                    db=db
+                )
+                
+                # Build response
+                org = result["organization"]
+                admin = result["admin_user"]
+                default_bu = result["default_business_unit"]
+                
+                return auth_pb2.CreateOrganizationWithAdminResponse(
+                    organization=auth_pb2.OrganizationResponse(
+                        id=org["id"],
+                        name=org["name"],
+                        slug=org["slug"],
+                        description=org["description"] or "",
+                        is_active=org["is_active"],
+                        created_at=org["created_at"],
+                        updated_at=org["updated_at"]
+                    ),
+                    admin_user=auth_pb2.UserResponse(
+                        id=admin["id"],
+                        email=admin["email"],
+                        username=admin["username"],
+                        full_name=admin.get("full_name", ""),
+                        is_active=True
+                    ),
+                    default_business_unit=auth_pb2.BusinessUnitResponse(
+                        id=default_bu["id"],
+                        name=default_bu["name"],
+                        slug=default_bu["slug"],
+                        description=default_bu["description"],
+                        organization_id=default_bu["organization_id"],
+                        is_active=default_bu["is_active"],
+                        role="",
+                        member_count=0,
+                        can_manage_members=False,
+                        created_at=default_bu["created_at"],
+                        updated_at=default_bu["updated_at"]
+                    )
+                )
+            except ValueError as e:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details(str(e))
+                return auth_pb2.CreateOrganizationWithAdminResponse()
+            except Exception as e:
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Internal error: {str(e)}")
+                return auth_pb2.CreateOrganizationWithAdminResponse()

@@ -1,4 +1,8 @@
-"""Pulumi Automation API service for executing infrastructure provisioning"""
+"""Pulumi Automation API service for executing infrastructure provisioning.
+
+DEPRECATED: This service uses local Pulumi execution which requires the Pulumi SDK.
+Use pulumi_deployments_service.py instead for production deployments.
+"""
 import os
 import tempfile
 import asyncio
@@ -6,8 +10,18 @@ import re
 import time
 from pathlib import Path
 from typing import Dict, Optional
-import pulumi
-from pulumi import automation as auto
+
+# Pulumi SDK is optional - only needed for fallback local execution
+# For production, use Pulumi Deployments API instead
+try:
+    import pulumi
+    from pulumi import automation as auto
+    PULUMI_SDK_AVAILABLE = True
+except ImportError:
+    PULUMI_SDK_AVAILABLE = False
+    pulumi = None
+    auto = None
+
 from app.config import settings
 from app.logger import logger
 
@@ -26,10 +40,15 @@ class PulumiService:
         credentials: Optional[Dict] = None,
         project_name: str = "idp-plugin",
         manifest: Optional[Dict] = None,
-        on_output: Optional[callable] = None
+        on_output: Optional[callable] = None,
+        organization_id: Optional[str] = None,
+        business_unit_id: Optional[str] = None
     ) -> Dict:
         """
-        Execute a Pulumi program
+        Execute a Pulumi program locally using the Automation API.
+        
+        DEPRECATED: Use pulumi_deployments_service.trigger_deployment() instead.
+        This method requires the Pulumi SDK to be installed.
         
         Args:
             plugin_path: Path to extracted plugin directory
@@ -41,23 +60,77 @@ class PulumiService:
         Returns:
             Dict with outputs and status
         """
+        # Check if Pulumi SDK is available
+        if not PULUMI_SDK_AVAILABLE:
+            error_msg = (
+                "Pulumi SDK is not installed. Local Pulumi execution is disabled. "
+                "Please use GitOps flow with Pulumi Deployments API instead, or install "
+                "pulumi, pulumi-aws, pulumi-gcp, pulumi-azure packages for local execution."
+            )
+            logger.error(f"[Pulumi] {error_msg}")
+            return {
+                "status": "failed",
+                "error": error_msg,
+                "outputs": {}
+            }
+        
         # Setup environment variables for cloud credentials
         env = os.environ.copy()
         
+        # Get Pulumi configurations (with fallback: BU -> Org -> System)
+        pulumi_access_token = None
+        pulumi_org = None
+        pulumi_esc_env_aws = None
+        pulumi_esc_env_gcp = None
+        pulumi_esc_env_azure = None
+        
+        if organization_id:
+            # Try to get from auth-service
+            from app.utils.config_helper import get_config_from_auth_service
+            
+            pulumi_access_token = await get_config_from_auth_service(
+                organization_id, "PULUMI_ACCESS_TOKEN", business_unit_id
+            )
+            pulumi_org = await get_config_from_auth_service(
+                organization_id, "PULUMI_ORG", business_unit_id
+            )
+            pulumi_esc_env_aws = await get_config_from_auth_service(
+                organization_id, "PULUMI_ESC_ENVIRONMENT_AWS", business_unit_id
+            )
+            pulumi_esc_env_gcp = await get_config_from_auth_service(
+                organization_id, "PULUMI_ESC_ENVIRONMENT_GCP", business_unit_id
+            )
+            pulumi_esc_env_azure = await get_config_from_auth_service(
+                organization_id, "PULUMI_ESC_ENVIRONMENT_AZURE", business_unit_id
+            )
+
+            # Strict check: If tokens are missing for this organization, do NOT fallback
+            if not pulumi_access_token:
+                error_msg = f"PULUMI_ACCESS_TOKEN not configured for organization {organization_id}. Please set this in Settings."
+                logger.error(f"[Pulumi] {error_msg}")
+                raise ValueError(error_msg)
+        else:
+            # Fallback to system defaults ONLY if NO organization_id was provided (e.g., system-wide plugins if any)
+            pulumi_access_token = settings.PULUMI_ACCESS_TOKEN
+            pulumi_org = settings.PULUMI_ORG
+            pulumi_esc_env_aws = settings.PULUMI_ESC_ENVIRONMENT_AWS
+            pulumi_esc_env_gcp = settings.PULUMI_ESC_ENVIRONMENT_GCP
+            pulumi_esc_env_azure = settings.PULUMI_ESC_ENVIRONMENT_AZURE
+        
         # Configure Pulumi Cloud backend if access token is set
-        use_pulumi_cloud = bool(settings.PULUMI_ACCESS_TOKEN)
+        use_pulumi_cloud = bool(pulumi_access_token)
         
         # Check if ESC environment is configured for this cloud provider
-        esc_env = self.get_esc_environment(manifest)
+        esc_env = self.get_esc_environment(manifest, pulumi_esc_env_aws, pulumi_esc_env_gcp, pulumi_esc_env_azure)
         use_esc = esc_env is not None
         
         if use_pulumi_cloud:
             # Set Pulumi Cloud access token
-            env["PULUMI_ACCESS_TOKEN"] = settings.PULUMI_ACCESS_TOKEN
+            env["PULUMI_ACCESS_TOKEN"] = pulumi_access_token
             # Set organization if configured
-            if settings.PULUMI_ORG:
-                env["PULUMI_ORG"] = settings.PULUMI_ORG
-            logger.info(f"[Pulumi] Using Pulumi Cloud backend (org: {settings.PULUMI_ORG or 'default'})")
+            if pulumi_org:
+                env["PULUMI_ORG"] = pulumi_org
+            logger.info(f"[Pulumi] Using Pulumi Cloud backend (org: {pulumi_org or 'default'})")
         else:
             # Only set Pulumi passphrase for local secrets when not using Pulumi Cloud
             env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
@@ -196,28 +269,85 @@ class PulumiService:
         credentials: Optional[Dict] = None,
         project_name: str = "idp-plugin",  # Changed to match run_pulumi default
         cloud_provider: Optional[str] = None,  # Optional cloud provider for ESC environment selection
-        on_output: Optional[callable] = None
+        on_output: Optional[callable] = None,
+        organization_id: Optional[str] = None,
+        business_unit_id: Optional[str] = None
     ) -> Dict:
-        """Destroy a Pulumi stack"""
+        """Destroy a Pulumi stack locally using the Automation API.
+        
+        DEPRECATED: Use pulumi_deployments_service.destroy_deployment() instead.
+        """
+        # Check if Pulumi SDK is available
+        if not PULUMI_SDK_AVAILABLE:
+            error_msg = (
+                "Pulumi SDK is not installed. Local Pulumi execution is disabled. "
+                "Please use GitOps flow with Pulumi Deployments API instead."
+            )
+            logger.error(f"[Pulumi] {error_msg}")
+            return {
+                "status": "failed",
+                "error": error_msg
+            }
+        
         import sys
         env = os.environ.copy()
         
+        # Get Pulumi configurations (with fallback: BU -> Org -> System)
+        pulumi_access_token = None
+        pulumi_org = None
+        pulumi_esc_env_aws = None
+        pulumi_esc_env_gcp = None
+        pulumi_esc_env_azure = None
+        
+        if organization_id:
+            # Try to get from auth-service
+            from app.utils.config_helper import get_config_from_auth_service
+            
+            pulumi_access_token = await get_config_from_auth_service(
+                organization_id, "PULUMI_ACCESS_TOKEN", business_unit_id
+            )
+            pulumi_org = await get_config_from_auth_service(
+                organization_id, "PULUMI_ORG", business_unit_id
+            )
+            pulumi_esc_env_aws = await get_config_from_auth_service(
+                organization_id, "PULUMI_ESC_ENVIRONMENT_AWS", business_unit_id
+            )
+            pulumi_esc_env_gcp = await get_config_from_auth_service(
+                organization_id, "PULUMI_ESC_ENVIRONMENT_GCP", business_unit_id
+            )
+            pulumi_esc_env_azure = await get_config_from_auth_service(
+                organization_id, "PULUMI_ESC_ENVIRONMENT_AZURE", business_unit_id
+            )
+
+            # Strict check: If tokens are missing for this organization, do NOT fallback
+            if not pulumi_access_token:
+                error_msg = f"PULUMI_ACCESS_TOKEN not configured for organization {organization_id}. Please set this in Settings."
+                logger.error(f"[Pulumi] {error_msg}")
+                raise ValueError(error_msg)
+        else:
+            # Fallback to system defaults
+            pulumi_access_token = settings.PULUMI_ACCESS_TOKEN
+            pulumi_org = settings.PULUMI_ORG
+            pulumi_esc_env_aws = settings.PULUMI_ESC_ENVIRONMENT_AWS
+            pulumi_esc_env_gcp = settings.PULUMI_ESC_ENVIRONMENT_GCP
+            pulumi_esc_env_azure = settings.PULUMI_ESC_ENVIRONMENT_AZURE
+        
         # Configure Pulumi Cloud backend if access token is set
-        use_pulumi_cloud = bool(settings.PULUMI_ACCESS_TOKEN)
+        use_pulumi_cloud = bool(pulumi_access_token)
         
         # Check if ESC environment is configured for this cloud provider
         # Create a minimal manifest-like dict for ESC lookup
         manifest = {"cloud_provider": cloud_provider.lower()} if cloud_provider and isinstance(cloud_provider, str) else None
-        esc_env = self.get_esc_environment(manifest)
+        esc_env = self.get_esc_environment(manifest, pulumi_esc_env_aws, pulumi_esc_env_gcp, pulumi_esc_env_azure)
         use_esc = esc_env is not None
         
         if use_pulumi_cloud:
             # Set Pulumi Cloud access token
-            env["PULUMI_ACCESS_TOKEN"] = settings.PULUMI_ACCESS_TOKEN
+            env["PULUMI_ACCESS_TOKEN"] = pulumi_access_token
             # Set organization if configured
-            if settings.PULUMI_ORG:
-                env["PULUMI_ORG"] = settings.PULUMI_ORG
-            logger.info(f"[Pulumi] Using Pulumi Cloud backend for destroy (org: {settings.PULUMI_ORG or 'default'})")
+            if pulumi_org:
+                env["PULUMI_ORG"] = pulumi_org
+            logger.info(f"[Pulumi] Using Pulumi Cloud backend for destroy (org: {pulumi_org or 'default'})")
         else:
             # Only set Pulumi passphrase for local secrets when not using Pulumi Cloud
             env["PULUMI_CONFIG_PASSPHRASE"] = settings.PULUMI_CONFIG_PASSPHRASE
@@ -249,6 +379,7 @@ class PulumiService:
                     options={"virtualenv": sys.prefix}
                 )
             )
+            logger.info(f"[Pulumi] Project settings created")
             
             # Create workspace options
             workspace_opts = auto.LocalWorkspaceOptions(
@@ -260,11 +391,13 @@ class PulumiService:
             # First try to select the existing stack (from Pulumi Cloud or local)
             # This will work if the stack exists in Pulumi Cloud
             try:
+                logger.info(f"[Pulumi] Selecting stack {stack_name} in {plugin_path}")
                 stack = auto.select_stack(
                     stack_name=stack_name,
                     work_dir=str(plugin_path),
                     opts=workspace_opts
                 )
+                logger.info(f"[Pulumi] Stack selected")
                 
                 # Link ESC environment to the stack for credential management
                 if use_esc and esc_env:
@@ -414,7 +547,13 @@ class PulumiService:
                 "error": error_msg
             }
     
-    def get_esc_environment(self, manifest: Optional[Dict]) -> Optional[str]:
+    def get_esc_environment(
+        self, 
+        manifest: Optional[Dict],
+        esc_env_aws: Optional[str] = None,
+        esc_env_gcp: Optional[str] = None,
+        esc_env_azure: Optional[str] = None
+    ) -> Optional[str]:
         """
         Determine the appropriate ESC environment based on cloud provider from manifest.
         
@@ -432,12 +571,28 @@ class PulumiService:
         
         cloud_provider = manifest.get("cloud_provider", "").lower()
         
-        if cloud_provider == "gcp" and settings.PULUMI_ESC_ENVIRONMENT_GCP:
-            return settings.PULUMI_ESC_ENVIRONMENT_GCP
-        elif cloud_provider == "aws" and settings.PULUMI_ESC_ENVIRONMENT_AWS:
-            return settings.PULUMI_ESC_ENVIRONMENT_AWS
-        elif cloud_provider == "azure" and settings.PULUMI_ESC_ENVIRONMENT_AZURE:
-            return settings.PULUMI_ESC_ENVIRONMENT_AZURE
+        # Use provided organization-specific values if available
+        # These are passed from run_pulumi/destroy_stack which only use org configs if org_id is present
+        if any([esc_env_gcp, esc_env_aws, esc_env_azure]):
+            if cloud_provider == "gcp":
+                return esc_env_gcp
+            elif cloud_provider == "aws":
+                return esc_env_aws
+            elif cloud_provider == "azure":
+                return esc_env_azure
+            return None
+            
+        # Fallback to settings ONLY if no organization values were provided (system-level request)
+        esc_env_gcp = settings.PULUMI_ESC_ENVIRONMENT_GCP
+        esc_env_aws = settings.PULUMI_ESC_ENVIRONMENT_AWS
+        esc_env_azure = settings.PULUMI_ESC_ENVIRONMENT_AZURE
+        
+        if cloud_provider == "gcp" and esc_env_gcp:
+            return esc_env_gcp
+        elif cloud_provider == "aws" and esc_env_aws:
+            return esc_env_aws
+        elif cloud_provider == "azure" and esc_env_azure:
+            return esc_env_azure
         
         return None
     

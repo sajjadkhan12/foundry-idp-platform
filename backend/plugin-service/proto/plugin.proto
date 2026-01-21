@@ -47,6 +47,7 @@ message UploadPluginRequest {
   string git_repo_url = 3;
   string git_branch = 4;
   string user_id = 5;
+  string organization_id = 6;
 }
 
 message UploadMicroserviceTemplateRequest {
@@ -58,6 +59,7 @@ message UploadMicroserviceTemplateRequest {
   string template_path = 6;
   string author = 7;
   string user_id = 8;
+  string organization_id = 9;
 }
 
 message PluginVersionResponse {
@@ -163,27 +165,32 @@ message JobLogsResponse {
 message ListPluginsRequest {
   string user_id = 1;
   string business_unit_id = 2;
+  string organization_id = 3;
 }
 
 message GetPluginRequest {
   string plugin_id = 1;
   string user_id = 2;
   string business_unit_id = 3;
+  string organization_id = 4;
 }
 
 message DeletePluginRequest {
   string plugin_id = 1;
   string user_id = 2;
+  string organization_id = 3;
 }
 
 message LockPluginRequest {
   string plugin_id = 1;
   string user_id = 2;
+  string organization_id = 3;
 }
 
 message UnlockPluginRequest {
   string plugin_id = 1;
   string user_id = 2;
+  string organization_id = 3;
 }
 
 message PluginResponse {
@@ -229,6 +236,7 @@ message RequestPluginAccessRequest {
   string user_id = 2;
   string business_unit_id = 3;
   string note = 4;
+  string organization_id = 5;
 }
 
 message GrantPluginAccessRequest {
@@ -236,24 +244,28 @@ message GrantPluginAccessRequest {
   string user_id = 2;  // User to grant access to
   string granted_by_user_id = 3;  // Admin granting access
   string business_unit_id = 4;
+  string organization_id = 5;
 }
 
 message RejectPluginAccessRequest {
   string plugin_id = 1;
   string user_id = 2;  // User whose request to reject
   string rejected_by_user_id = 3;  // Admin rejecting
+  string organization_id = 4;
 }
 
 message RevokePluginAccessRequest {
   string plugin_id = 1;
   string user_id = 2;  // User to revoke access from
   string revoked_by_user_id = 3;  // Admin revoking
+  string organization_id = 4;
 }
 
 message RestorePluginAccessRequest {
   string plugin_id = 1;
   string user_id = 2;  // User to restore access for
   string restored_by_user_id = 3;  // Admin restoring
+  string organization_id = 4;
 }
 
 message ListAccessRequestsRequest {
@@ -261,10 +273,12 @@ message ListAccessRequestsRequest {
   string status = 2;  // Optional: filter by status (pending, approved, rejected)
   string search = 3;  // Optional: search term
   string user_id = 4;  // Requesting user's ID for permission-based filtering
+  string organization_id = 5;
 }
 
 message ListAccessGrantsRequest {
   string plugin_id = 1;  // Optional: filter by plugin
+  string organization_id = 2;
 }
 
 message PluginAccessRequestResponse {
@@ -279,6 +293,7 @@ message PluginAccessRequestResponse {
   string requested_at = 9;
   string reviewed_at = 10;
   string reviewed_by = 11;
+  string organization_id = 12;
 }
 
 message PluginAccessResponse {
@@ -290,6 +305,7 @@ message PluginAccessResponse {
   string business_unit_id = 6;
   string granted_by = 7;
   string granted_at = 8;
+  string organization_id = 9;
 }
 
 message ListAccessRequestsResponse {

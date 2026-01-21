@@ -28,7 +28,8 @@ class DeploymentService:
         inputs: Dict,
         cost_center: Optional[str],
         project_code: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ) -> Dict:
         """Create a new deployment"""
         # Extract metadata from inputs if provided
@@ -37,12 +38,37 @@ class DeploymentService:
         
         # Handle business_unit_id - convert empty string to None, validate UUID if provided
         bu_id = None
+        org_id = None
+        
         if business_unit_id and business_unit_id.strip():
             try:
                 bu_id = uuid.UUID(business_unit_id)
+                # Get organization_id from business_unit
+                from sqlalchemy import text
+                bu_result = await db.execute(
+                    text("SELECT organization_id FROM business_units WHERE id = :bu_id"),
+                    {"bu_id": str(bu_id)}
+                )
+                bu_row = bu_result.fetchone()
+                if bu_row:
+                    org_id = bu_row[0]
             except ValueError:
                 # Invalid UUID format, set to None
                 bu_id = None
+        
+        # If organization_id not found from BU, get it from user
+        if not org_id:
+            from sqlalchemy import text
+            user_result = await db.execute(
+                text("SELECT organization_id FROM users WHERE id = :user_id"),
+                {"user_id": user_id}
+            )
+            user_row = user_result.fetchone()
+            if user_row:
+                org_id = user_row[0]
+        
+        if not org_id:
+            raise ValueError("Could not determine organization_id for deployment")
         
         deployment = Deployment(
             id=uuid.uuid4(),
@@ -54,6 +80,7 @@ class DeploymentService:
             version=version,
             user_id=uuid.UUID(user_id),
             business_unit_id=bu_id,
+            organization_id=org_id,
             inputs=inputs,
             cloud_provider=cloud_provider,
             region=region,
@@ -130,7 +157,8 @@ class DeploymentService:
         project_code: Optional[str],
         status: Optional[str],
         user_id: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ) -> Dict:
         """
         Update a deployment
@@ -218,13 +246,14 @@ class DeploymentService:
                 
                 await db.execute(
                     text("""
-                        INSERT INTO jobs (id, plugin_version_id, deployment_id, status, triggered_by, inputs, retry_count, created_at)
-                        VALUES (:id, :plugin_version_id, :deployment_id, CAST(:status AS jobstatus), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
+                        INSERT INTO jobs (id, plugin_version_id, deployment_id, organization_id, status, triggered_by, inputs, retry_count, created_at)
+                        VALUES (:id, :plugin_version_id, :deployment_id, :organization_id, CAST(:status AS job_status_enum), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
                     """),
                     {
                         "id": job_id,
                         "plugin_version_id": plugin_version_id,
                         "deployment_id": str(deployment_id),
+                        "organization_id": str(deployment.organization_id) if deployment.organization_id else None,
                         "status": "pending",
                         "triggered_by": triggered_by_email,
                         "inputs": json.dumps(job_inputs)
@@ -247,13 +276,23 @@ class DeploymentService:
                 from app.grpc.worker_client import worker_client
                 
                 try:
-                    worker_result = await worker_client.provision_infrastructure(
-                        job_id=job_id,
-                        plugin_id=deployment.plugin_id,
-                        version=deployment.version,
-                        inputs=inputs,
-                        deployment_id=deployment_id
-                    )
+                    if deployment.deployment_type == "microservice":
+                        # Microservice logic merged with infrastructure or removed as requested
+                        worker_result = await worker_client.provision_infrastructure(
+                            job_id=job_id,
+                            plugin_id=deployment.plugin_id,
+                            version=deployment.version,
+                            inputs=inputs,
+                            deployment_id=deployment_id
+                        )
+                    else:
+                        worker_result = await worker_client.provision_infrastructure(
+                            job_id=job_id,
+                            plugin_id=deployment.plugin_id,
+                            version=deployment.version,
+                            inputs=inputs,
+                            deployment_id=deployment_id
+                        )
                     
                     if worker_result["success"]:
                         task_id = worker_result["task_id"]
@@ -266,7 +305,7 @@ class DeploymentService:
                         await db.execute(
                             text("""
                                 UPDATE jobs 
-                                SET status = CAST('failed' AS jobstatus),
+                                SET status = CAST('failed' AS job_status_enum),
                                     error_message = :error
                                 WHERE id = :job_id
                             """),
@@ -332,7 +371,8 @@ class DeploymentService:
         self,
         deployment_id: str,
         user_email: str,
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ) -> Dict:
         """Delete a deployment - marks as DELETING and triggers worker-service"""
         try:
@@ -359,28 +399,32 @@ class DeploymentService:
         
         # Cancel any pending provisioning jobs for this deployment
         try:
-            result = await db.execute(
-                text("""
-                    UPDATE jobs 
-                    SET status = CAST('failed' AS jobstatus),
-                        error_message = 'Deployment deletion requested - job cancelled'
-                    WHERE deployment_id = :deployment_id 
-                    AND status = CAST('pending' AS jobstatus)
-                    AND (inputs->>'action' IS NULL OR (inputs->>'action')::text != 'destroy')
-                """),
-                {"deployment_id": str(deployment_id)}
-            )
-            rows_updated = result.rowcount
-            if rows_updated > 0:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.info(f"Cancelled {rows_updated} pending provisioning job(s) for deployment {deployment_id}")
-            await db.commit()
+            # Use nested transaction (savepoint) so failure doesn't abort the main transaction
+            async with db.begin_nested():
+                result = await db.execute(
+                    text("""
+                        UPDATE jobs 
+                        SET status = CAST('failed' AS job_status_enum),
+                            error_message = 'Deployment deletion requested - job cancelled'
+                        WHERE deployment_id = :deployment_id 
+                        AND status = CAST('pending' AS job_status_enum)
+                        AND (inputs->>'action' IS NULL OR (inputs->>'action')::text != 'destroy')
+                    """),
+                    {"deployment_id": str(deployment_id)}
+                )
+                rows_updated = result.rowcount
+                if rows_updated > 0:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Cancelled {rows_updated} pending provisioning job(s) for deployment {deployment_id}")
+            # db.commit() is NOT needed for begin_nested(), it auto-commits the savepoint if no error
+            await db.commit() # Commit the transaction including status change and job updates
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to cancel pending jobs: {e}, continuing with deletion")
-            # Still commit the status change
+            # Transaction is still valid due to begin_nested rollback
+            # Just commit the status change
             await db.commit()
         
         # Create deletion job (similar to monolith)
@@ -415,13 +459,14 @@ class DeploymentService:
                 
                 await db.execute(
                     text("""
-                        INSERT INTO jobs (id, plugin_version_id, deployment_id, status, triggered_by, inputs, retry_count, created_at)
-                        VALUES (:id, :plugin_version_id, :deployment_id, CAST(:status AS jobstatus), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
+                        INSERT INTO jobs (id, plugin_version_id, deployment_id, organization_id, status, triggered_by, inputs, retry_count, created_at)
+                        VALUES (:id, :plugin_version_id, :deployment_id, :organization_id, CAST(:status AS job_status_enum), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
                     """),
                     {
                         "id": job_id,
                         "plugin_version_id": plugin_version_id,
                         "deployment_id": str(deployment_id),
+                        "organization_id": str(deployment.organization_id) if deployment.organization_id else None,
                         "status": "pending",
                         "triggered_by": user_email,
                         "inputs": json.dumps(deletion_inputs)
@@ -433,19 +478,29 @@ class DeploymentService:
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to create deletion job: {e}, continuing without job tracking")
         
-        # Trigger worker-service to destroy infrastructure
+        # Trigger worker-service to destroy infrastructure using gRPC
         task_id = None
         try:
-            import httpx
-            async with httpx.AsyncClient() as client:
-                worker_response = await client.post(
-                    f"http://worker-service:8000/api/v1/provision/destroy/{deployment_id}",
-                    timeout=30.0
-                )
-                if worker_response.status_code == 202:
-                    task_data = worker_response.json()
-                    task_id = task_data.get("task_id")
-                    # Use the job_id we created, not from worker response
+            from app.grpc.worker_client import worker_client
+            if deployment.deployment_type == "microservice":
+                # Microservice logic merged with infrastructure or removed as requested
+                worker_result = await worker_client.destroy_infrastructure(str(deployment_id), job_id)
+            else:
+                worker_result = await worker_client.destroy_infrastructure(str(deployment_id), job_id)
+            
+            if worker_result["success"]:
+                task_id = worker_result.get("task_id")
+            else:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to trigger infrastructure destruction: {worker_result['error']}")
+                # If job was created, mark it as failed
+                if job_id:
+                    await db.execute(
+                        text("UPDATE jobs SET status = CAST('failed' AS job_status_enum), error_message = :error WHERE id = :job_id"),
+                        {"job_id": job_id, "error": worker_result["error"]}
+                    )
+                    await db.commit()
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -470,16 +525,36 @@ class DeploymentService:
         tags_filter: Optional[str],
         user_id: Optional[str],
         business_unit_id: Optional[str],
-        skip: int,
-        limit: int,
-        db: AsyncSession
+        organization_id: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+        db: AsyncSession = None
     ) -> Dict:
-        """List deployments with filters"""
+        """List deployments with filters - automatically filtered by organization if provided"""
+        if db is None:
+            from app.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                return await self.list_deployments(
+                    search, status_filter, cloud_provider, plugin_id, environment,
+                    tags_filter, user_id, business_unit_id, organization_id, skip, limit, db
+                )
+        
         query = select(Deployment).options(selectinload(Deployment.tags), joinedload(Deployment.user))
         count_query = select(func.count(Deployment.id))
         
         # Apply filters
         filters = []
+        
+        # Filter by organization directly using organization_id
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                filters.append(Deployment.organization_id == org_uuid)
+            except ValueError:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Invalid organization_id format: {organization_id}")
+                pass
         
         if status_filter:
             filters.append(Deployment.status == status_filter)
@@ -509,7 +584,11 @@ class DeploymentService:
             search_filter = or_(
                 Deployment.name.ilike(f"%{search}%"),
                 Deployment.plugin_id.ilike(f"%{search}%"),
-                Deployment.stack_name.ilike(f"%{search}%")
+                Deployment.stack_name.ilike(f"%{search}%"),
+                Deployment.region.ilike(f"%{search}%"),
+                Deployment.cloud_provider.ilike(f"%{search}%"),
+                Deployment.environment.ilike(f"%{search}%"),
+                Deployment.github_repo_name.ilike(f"%{search}%")
             )
             filters.append(search_filter)
         
@@ -747,6 +826,7 @@ class DeploymentService:
         else:
             # Create new tag
             new_tag = DeploymentTag(
+                id=uuid.uuid4(),
                 deployment_id=deployment_uuid,
                 key=key,
                 value=value
@@ -934,9 +1014,8 @@ class DeploymentService:
         end_date: Optional[str],
         db: AsyncSession
     ) -> Dict:
-        """Get deployment costs (placeholder - cost calculation would need external services)"""
-        # This is a placeholder implementation
-        # In production, this would call cost estimation services (GCP, AWS, etc.)
+        """Get deployment costs from deployment_costs table"""
+        from app.models.deployment import DeploymentCost
         
         query = select(Deployment).where(Deployment.status != DeploymentStatus.DELETED.value)
         
@@ -949,26 +1028,236 @@ class DeploymentService:
         result = await db.execute(query)
         deployments = result.scalars().all()
         
-        # Placeholder: return zero costs
-        # In production, this would calculate actual costs from cloud provider APIs
         costs = []
         total_cost = 0.0
         
         for deployment in deployments:
-            # Placeholder cost calculation
+            # Use estimated_monthly_cost if available, otherwise query deployment_costs table
+            est_cost = float(deployment.estimated_monthly_cost) if deployment.estimated_monthly_cost else 0.0
+            total_cost += est_cost
+            
             cost_item = {
                 "deployment_id": str(deployment.id),
                 "deployment_name": deployment.name,
-                "cost": "0.00",
+                "cost": f"{est_cost:.2f}",
                 "period": datetime.now(timezone.utc).strftime("%Y-%m")
             }
             costs.append(cost_item)
         
         return {
-            "total_cost": str(total_cost),
+            "total_cost": f"{total_cost:.2f}",
             "currency": "USD",
             "costs": costs
         }
+    
+    async def get_cost_trend(
+        self,
+        months: int,
+        organization_id: Optional[str],
+        db: AsyncSession
+    ) -> Dict:
+        """Get monthly cost trend from deployment_costs table"""
+        from app.models.deployment import DeploymentCost
+        from dateutil.relativedelta import relativedelta
+        
+        # Get the last N months
+        now = datetime.now(timezone.utc)
+        trend = []
+        total = 0.0
+        
+        for i in range(months - 1, -1, -1):
+            month_date = now - relativedelta(months=i)
+            billing_month = month_date.strftime("%Y-%m")
+            month_label = month_date.strftime("%b")
+            
+            # Query costs for this month
+            result = await db.execute(
+                text("""
+                    SELECT COALESCE(SUM(amount), 0) as total
+                    FROM deployment_costs
+                    WHERE billing_month = :billing_month
+                """),
+                {"billing_month": billing_month}
+            )
+            row = result.fetchone()
+            amount = float(row[0]) if row else 0.0
+            
+            # If no historical data, use estimated costs from deployments
+            if amount == 0.0 and i == 0:
+                # Current month - use sum of estimated costs
+                est_result = await db.execute(
+                    text("""
+                        SELECT COALESCE(SUM(estimated_monthly_cost), 0)
+                        FROM deployments
+                        WHERE status != 'deleted'
+                    """)
+                )
+                est_row = est_result.fetchone()
+                amount = float(est_row[0]) if est_row and est_row[0] else 0.0
+            
+            total += amount
+            trend.append({
+                "month": month_label,
+                "amount": amount,
+                "projected": i == 0,  # Current month is considered projected
+                "currency": "USD"
+            })
+        
+        return {
+            "trend": trend,
+            "total": total,
+            "currency": "USD"
+        }
+    
+    async def get_costs_by_provider(
+        self,
+        organization_id: Optional[str],
+        db: AsyncSession
+    ) -> Dict:
+        """Get costs grouped by cloud provider"""
+        # Aggregate estimated costs by provider
+        result = await db.execute(
+            text("""
+                SELECT 
+                    COALESCE(cloud_provider, 'unknown') as provider,
+                    COALESCE(SUM(estimated_monthly_cost), 0) as total,
+                    COUNT(*) as deployment_count
+                FROM deployments
+                WHERE status != 'deleted'
+                GROUP BY cloud_provider
+                ORDER BY total DESC
+            """)
+        )
+        
+        costs = []
+        total = 0.0
+        
+        for row in result:
+            provider = row[0] or "unknown"
+            amount = float(row[1]) if row[1] else 0.0
+            count = row[2]
+            total += amount
+            
+            costs.append({
+                "provider": provider.upper(),
+                "amount": amount,
+                "currency": "USD",
+                "deployment_count": count
+            })
+        
+        return {
+            "costs": costs,
+            "total": total,
+            "currency": "USD"
+        }
+    
+    async def estimate_pre_provision_cost(
+        self,
+        plugin_id: str,
+        inputs: Dict,
+        db: AsyncSession
+    ) -> Dict:
+        """Estimate cost before provisioning based on plugin and inputs"""
+        # Get plugin metadata for pricing info
+        result = await db.execute(
+            text("""
+                SELECT pv.manifest, p.name
+                FROM plugin_versions pv
+                JOIN plugins p ON pv.plugin_id = p.id
+                WHERE p.id = :plugin_id
+                ORDER BY pv.created_at DESC
+                LIMIT 1
+            """),
+            {"plugin_id": plugin_id}
+        )
+        row = result.fetchone()
+        
+        if not row:
+            return {
+                "estimated_monthly_cost": 0.0,
+                "currency": "USD",
+                "period": "month",
+                "breakdown": {},
+                "note": "Plugin not found"
+            }
+        
+        manifest = row[0] if row[0] else {}
+        plugin_name = row[1]
+        
+        # Extract cloud provider and region from inputs or manifest
+        cloud_provider = inputs.get("_cloud_provider") or manifest.get("cloud_provider", "unknown")
+        region = inputs.get("region") or inputs.get("_region") or manifest.get("default_region", "us-central1")
+        
+        # Simple cost estimation based on common resource patterns
+        # This is a placeholder - in production, integrate with Infracost or cloud pricing APIs
+        estimated_cost = 0.0
+        breakdown = {}
+        
+        # GCS Bucket estimation
+        if "bucket" in plugin_id.lower() or "storage" in plugin_id.lower():
+            storage_class = inputs.get("storage_class", "STANDARD")
+            base_cost = {"STANDARD": 0.020, "NEARLINE": 0.010, "COLDLINE": 0.004, "ARCHIVE": 0.0012}.get(storage_class, 0.020)
+            # Assume 100GB baseline
+            estimated_cost = base_cost * 100
+            breakdown["storage"] = estimated_cost
+        
+        # Compute instance estimation
+        if "compute" in plugin_id.lower() or "vm" in plugin_id.lower() or "instance" in plugin_id.lower():
+            machine_type = inputs.get("machine_type", "e2-micro")
+            # Simplified GCP pricing (monthly)
+            machine_costs = {
+                "e2-micro": 6.11,
+                "e2-small": 12.23,
+                "e2-medium": 24.46,
+                "n1-standard-1": 24.27,
+                "n1-standard-2": 48.55,
+                "n1-standard-4": 97.09,
+                "n2-standard-2": 69.35,
+                "n2-standard-4": 138.70,
+            }
+            estimated_cost = machine_costs.get(machine_type, 25.0)
+            breakdown["compute"] = estimated_cost
+        
+        # Cloud SQL estimation
+        if "sql" in plugin_id.lower() or "database" in plugin_id.lower():
+            tier = inputs.get("tier", "db-f1-micro")
+            tier_costs = {
+                "db-f1-micro": 7.67,
+                "db-g1-small": 25.55,
+                "db-n1-standard-1": 51.10,
+                "db-n1-standard-2": 102.20,
+            }
+            estimated_cost = tier_costs.get(tier, 25.0)
+            breakdown["database"] = estimated_cost
+        
+        # Default fallback
+        if estimated_cost == 0.0:
+            estimated_cost = 10.0  # Default $10/month for unknown resources
+            breakdown["base"] = estimated_cost
+        
+        return {
+            "estimated_monthly_cost": round(estimated_cost, 2),
+            "currency": "USD",
+            "period": "month",
+            "breakdown": breakdown,
+            "region": region,
+            "source": "estimate",
+            "note": f"Estimated cost for {plugin_name} based on {cloud_provider} pricing"
+        }
+    
+    async def update_deployment_cost(
+        self,
+        deployment_id: str,
+        estimated_cost: float,
+        breakdown: Optional[Dict],
+        db: AsyncSession
+    ) -> None:
+        """Update the estimated cost for a deployment"""
+        deployment = await db.get(Deployment, uuid.UUID(deployment_id))
+        if deployment:
+            deployment.estimated_monthly_cost = estimated_cost
+            await db.commit()
+
 
 
 
@@ -1096,21 +1385,160 @@ class DeploymentService:
             db=db
         )
         
-        # Create history entry for the rollback
-        if response.get("job_id"):
-            await self.create_deployment_history_entry(
-                deployment_id=deployment_id,
-                inputs=rollback_inputs,
-                outputs=None,
-                status="provisioning",
-                job_id=response.get("job_id"),
-                created_by=user_id,
-                description=f"Rollback to version {version_number}",
-                db=db
-            )
+        # NOTE: History entry is created by worker-service when update completes,
+        # which update_deployment triggers above.
         
         response["rollback_from_version"] = version_number
         return response
+
+
+    async def retry_deployment(
+        self,
+        deployment_id: str,
+        user_id: str,
+        user_email: str,
+        db: AsyncSession
+    ) -> Dict:
+        """
+        Retry a deployment: Creates a new job for the existing deployment and triggers provisioning.
+        """
+        try:
+            deployment_uuid = uuid.UUID(deployment_id)
+        except ValueError:
+            raise ValueError("Invalid deployment ID format")
+        
+        # Verify deployment exists
+        result = await db.execute(
+            select(Deployment).options(joinedload(Deployment.user)).where(Deployment.id == deployment_uuid)
+        )
+        deployment = result.scalar_one_or_none()
+        if not deployment:
+            raise ValueError("Deployment not found")
+        
+        # Determine deployment type
+        deployment_type = deployment.deployment_type
+        
+        # Get plugin version ID
+        plugin_version_result = await db.execute(
+            text("SELECT id FROM plugin_versions WHERE plugin_id = :plugin_id AND version = :version LIMIT 1"),
+            {"plugin_id": deployment.plugin_id, "version": deployment.version}
+        )
+        plugin_version_row = plugin_version_result.fetchone()
+        if not plugin_version_row:
+             # Try to find ANY version if specific one is gone (fallback)
+             plugin_version_result = await db.execute(
+                text("SELECT id FROM plugin_versions WHERE plugin_id = :plugin_id LIMIT 1"),
+                {"plugin_id": deployment.plugin_id}
+             )
+             plugin_version_row = plugin_version_result.fetchone()
+             if not plugin_version_row:
+                 raise ValueError(f"Plugin version metadata not found for {deployment.plugin_id}:{deployment.version}")
+        
+        plugin_version_id = plugin_version_row[0]
+        
+        # Parse inputs
+        inputs = deployment.inputs
+        if isinstance(inputs, str):
+            try:
+                inputs = json.loads(inputs)
+            except:
+                inputs = {}
+        
+        # Create new job
+        job_id = str(uuid.uuid4())
+        job_inputs = inputs.copy()
+        if deployment.business_unit_id:
+            job_inputs["_business_unit_id"] = str(deployment.business_unit_id)
+        
+        # Cast status to job_status_enum enum
+        await db.execute(
+            text("""
+                INSERT INTO jobs (id, plugin_version_id, deployment_id, organization_id, status, triggered_by, inputs, retry_count, created_at)
+                VALUES (:id, :plugin_version_id, :deployment_id, :organization_id, CAST(:status AS job_status_enum), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
+            """),
+            {
+                "id": job_id,
+                "plugin_version_id": plugin_version_id,
+                "deployment_id": str(deployment_id),
+                "organization_id": str(deployment.organization_id) if deployment.organization_id else None,
+                "status": "pending",
+                "triggered_by": user_email or user_id,
+                "inputs": json.dumps(job_inputs)
+            }
+        )
+        
+        # Update deployment status
+        deployment.status = DeploymentStatus.PROVISIONING.value
+        deployment.last_update_job_id = job_id
+        deployment.last_update_attempted_at = datetime.now(timezone.utc)
+        deployment.last_update_error = None
+        
+        await db.commit()
+        
+        # Trigger worker
+        from app.grpc.worker_client import worker_client
+        
+        worker_result = {"success": False, "error": "Unknown deployment type"}
+        
+        try:
+            if deployment_type == "microservice":
+                # Microservice logic merged with infrastructure or removed as requested
+                # Fallback to standard infrastructure provisioning logic
+                worker_result = await worker_client.provision_infrastructure(
+                    job_id=job_id,
+                    plugin_id=deployment.plugin_id,
+                    version=deployment.version,
+                    inputs=inputs,
+                    deployment_id=deployment_id,
+                    credential_name=None
+                )
+            else:
+                # Infrastructure
+                credential_name = None
+                if deployment.cloud_provider:
+                    credential_name = f"{deployment.cloud_provider.lower()}_default"
+                    
+                worker_result = await worker_client.provision_infrastructure(
+                    job_id=job_id,
+                    plugin_id=deployment.plugin_id,
+                    version=deployment.version,
+                    inputs=inputs,
+                    credential_name=credential_name,
+                    deployment_id=deployment_id
+                )
+            
+            if not worker_result["success"]:
+                 # Job failed to dispatch
+                 await db.execute(
+                    text("UPDATE jobs SET status = CAST('failed' AS job_status_enum), error_message = :error WHERE id = :job_id"),
+                    {"job_id": job_id, "error": worker_result.get("error", "Failed to dispatch to worker")}
+                 )
+                 deployment.status = DeploymentStatus.FAILED.value
+                 deployment.last_update_error = worker_result.get("error")
+                 await db.commit()
+                 raise RuntimeError(f"Worker service execution failed: {worker_result.get('error')}")
+            
+            return {
+                "message": "Retry job created successfully",
+                "job_id": job_id,
+                "deployment_id": deployment_id,
+                "task_id": worker_result.get("task_id", "")
+            }
+            
+        except Exception as e:
+            # If dispatch fails exception
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to dispatch retry job {job_id}: {e}", exc_info=True)
+            
+            await db.execute(
+                text("UPDATE jobs SET status = CAST('failed' AS job_status_enum), error_message = :error WHERE id = :job_id"),
+                {"job_id": job_id, "error": str(e)}
+            )
+            deployment.status = DeploymentStatus.FAILED.value
+            deployment.last_update_error = str(e)
+            await db.commit()
+            raise
 
 
 deployment_service = DeploymentService()

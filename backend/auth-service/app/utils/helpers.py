@@ -77,8 +77,48 @@ async def is_platform_admin(user: User, db: AsyncSession, enforcer: Enforcer) ->
         except Exception:
             continue
     
-    # Also check if user has "platform-admin" role
-    if "platform-admin" in valid_roles or "admin" in valid_roles:
+    # Also check if user has "platform-admin" or "organization-admin" role
+    if "platform-admin" in valid_roles or "admin" in valid_roles or "organization-admin" in valid_roles:
         return True
+    
+    return False
+
+
+async def is_super_admin(user: User, db: AsyncSession, enforcer: Enforcer) -> bool:
+    """Check if user is super admin (can manage all organizations)"""
+    org = await get_user_organization(user, db)
+    org_domain = get_organization_domain(org)
+    
+    if hasattr(enforcer, 'set_org_domain') and (not hasattr(enforcer, '_org_domain') or not enforcer._org_domain):
+        enforcer.set_org_domain(org_domain)
+    
+    user_id = str(user.id)
+    
+    # Check directly in Casbin for super-admin role (most efficient)
+    try:
+        # Check all domains for super-admin role
+        if enforcer.has_grouping_policy(user_id, "super-admin", org_domain):
+            return True
+        # Also check without domain (platform-level)
+        if enforcer.has_grouping_policy(user_id, "super-admin", ""):
+            return True
+    except Exception:
+        pass
+    
+    # Fallback: Check for super admin permissions
+    super_permissions = [
+        "super:organizations:create",
+        "super:organizations:delete",
+        "super:organizations:list",
+    ]
+    
+    from app.core.authorization import check_permission
+    
+    for perm in super_permissions:
+        try:
+            if await check_permission(user, perm, None, db, enforcer):
+                return True
+        except Exception:
+            continue
     
     return False

@@ -1,21 +1,37 @@
-FROM python:3.11-slim
+# Stage 1: Builder
+FROM python:3.11-slim-bookworm as builder
 
 WORKDIR /app
 
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN uv pip install --system --no-cache -r requirements.txt --target /install
+
+# Stage 2: Runtime
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy Python dependencies from builder
+COPY --from=builder /install /usr/local
 
 # Copy application code
-COPY . .
+COPY proto/ proto/
+COPY app/ app/
 
 # Generate proto files
 RUN python -m grpc_tools.protoc \

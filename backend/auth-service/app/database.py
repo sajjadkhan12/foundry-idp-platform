@@ -27,8 +27,9 @@ class Base(DeclarativeBase):
     pass
 
 async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+    """Get database session - FastAPI dependency"""
+    session = AsyncSessionLocal()
+    try:
+        yield session
+    finally:
+        await session.close()

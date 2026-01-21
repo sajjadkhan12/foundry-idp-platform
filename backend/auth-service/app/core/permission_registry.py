@@ -310,6 +310,74 @@ PERMISSIONS: List[PermissionDefinition] = [
         "icon": "🗑️"
     },
     
+    # Super Admin Permissions (cross-organization access)
+    {
+        "slug": "super:organizations:create",
+        "name": "Create Organizations (Super Admin)",
+        "description": "Create new organizations with admin users (Super Admin only)",
+        "category": "Super Admin",
+        "resource": "organizations",
+        "action": "create",
+        "environment": None,
+        "scope": "super",
+        "icon": "👑"
+    },
+    {
+        "slug": "super:organizations:delete",
+        "name": "Delete Organizations (Super Admin)",
+        "description": "Delete any organization from the system (Super Admin only)",
+        "category": "Super Admin",
+        "resource": "organizations",
+        "action": "delete",
+        "environment": None,
+        "scope": "super",
+        "icon": "🗑️"
+    },
+    {
+        "slug": "super:organizations:list",
+        "name": "List All Organizations (Super Admin)",
+        "description": "View all organizations in the system (Super Admin only)",
+        "category": "Super Admin",
+        "resource": "organizations",
+        "action": "list",
+        "environment": None,
+        "scope": "super",
+        "icon": "📋"
+    },
+    {
+        "slug": "super:organizations:read",
+        "name": "View Any Organization (Super Admin)",
+        "description": "View detailed information about any organization (Super Admin only)",
+        "category": "Super Admin",
+        "resource": "organizations",
+        "action": "read",
+        "environment": None,
+        "scope": "super",
+        "icon": "👁️"
+    },
+    {
+        "slug": "super:organizations:update",
+        "name": "Update Any Organization (Super Admin)",
+        "description": "Modify any organization's information (Super Admin only)",
+        "category": "Super Admin",
+        "resource": "organizations",
+        "action": "update",
+        "environment": None,
+        "scope": "super",
+        "icon": "✏️"
+    },
+    {
+        "slug": "super:users:list",
+        "name": "List All Users (Super Admin)",
+        "description": "View all users across all organizations (Super Admin only)",
+        "category": "Super Admin",
+        "resource": "users",
+        "action": "list",
+        "environment": None,
+        "scope": "super",
+        "icon": "👥"
+    },
+    
     # Plugin Management (Platform Level)
     {
         "slug": "platform:plugins:upload",

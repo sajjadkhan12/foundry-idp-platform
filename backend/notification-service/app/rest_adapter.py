@@ -102,8 +102,10 @@ async def _get_user_id_from_token(token: Optional[str]) -> Optional[str]:
 
 def _get_token_from_header(authorization: Optional[str] = Header(None)) -> Optional[str]:
     """Extract token from Authorization header"""
-    if authorization and authorization.startswith("Bearer "):
-        return authorization[7:]
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1]
     return None
 
 
@@ -282,12 +284,8 @@ async def mark_all_as_read(
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    # Get user_id from query or from authorization token
-    actual_user_id = user_id
-    if not actual_user_id:
-        token = _get_token_from_header(authorization)
-        if token:
-            actual_user_id = await _get_user_id_from_token(token)
+    # Get user_id from query or from authorization token (via dependency)
+    actual_user_id = user_id or current_user_id
     
     if not actual_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -333,12 +331,8 @@ async def get_unread_count(
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    # Extract user_id from token if not provided
-    actual_user_id = user_id
-    if not actual_user_id:
-        token = _get_token_from_header(authorization)
-        if token:
-            actual_user_id = await _get_user_id_from_token(token)
+    # Extract user_id from token if not provided (via dependency)
+    actual_user_id = user_id or current_user_id
     
     # If no user_id, return 0 count (graceful degradation)
     if not actual_user_id:

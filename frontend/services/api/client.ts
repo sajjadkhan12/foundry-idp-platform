@@ -168,6 +168,58 @@ class ApiClient {
             return false;
         }
     }
+
+    // Convenience methods for HTTP verbs
+    async get<T>(endpoint: string, options?: { params?: Record<string, any> }): Promise<{ data: T }> {
+        let url = endpoint;
+        if (options?.params) {
+            const searchParams = new URLSearchParams();
+            Object.entries(options.params).forEach(([key, value]) => {
+                if (value !== undefined && value !== null) {
+                    searchParams.append(key, String(value));
+                }
+            });
+            const queryString = searchParams.toString();
+            if (queryString) {
+                url += (url.includes('?') ? '&' : '?') + queryString;
+            }
+        }
+        const data = await this.request<T>(url, { method: 'GET' });
+        return { data };
+    }
+
+    async post<T>(endpoint: string, body?: any): Promise<{ data: T }> {
+        const data = await this.request<T>(endpoint, {
+            method: 'POST',
+            body: body ? JSON.stringify(body) : undefined
+        });
+        return { data };
+    }
+
+    async put<T>(endpoint: string, body?: any): Promise<{ data: T }> {
+        const data = await this.request<T>(endpoint, {
+            method: 'PUT',
+            body: body ? JSON.stringify(body) : undefined
+        });
+        return { data };
+    }
+
+    async delete<T = void>(endpoint: string, options?: { params?: Record<string, any> }): Promise<void> {
+        let url = endpoint;
+        if (options?.params) {
+            const searchParams = new URLSearchParams();
+            Object.entries(options.params).forEach(([key, value]) => {
+                if (value !== undefined && value !== null) {
+                    searchParams.append(key, String(value));
+                }
+            });
+            const queryString = searchParams.toString();
+            if (queryString) {
+                url += (url.includes('?') ? '&' : '?') + queryString;
+            }
+        }
+        await this.request<T>(url, { method: 'DELETE' });
+    }
 }
 
 export const apiClient = new ApiClient();

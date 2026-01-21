@@ -2,8 +2,10 @@
 from datetime import datetime, timezone
 from typing import Optional, List
 from sqlalchemy import String, DateTime, ForeignKey, Text, JSON, Boolean
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.ext.declarative import declarative_base
+import uuid
 
 Base = declarative_base()
 
@@ -18,6 +20,8 @@ class Plugin(Base):
     author: Mapped[Optional[str]] = mapped_column(String)
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deployment_type: Mapped[str] = mapped_column(String(50), nullable=False, default="infrastructure")
+    # Organization isolation - each plugin belongs to an organization
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

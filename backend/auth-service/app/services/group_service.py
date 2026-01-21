@@ -15,17 +15,25 @@ class GroupService:
         self,
         name: str,
         description: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        organization_id: str
     ) -> Dict[str, Any]:
-        """Create a new group"""
-        # Check if group exists
-        result = await db.execute(select(Group).where(Group.name == name))
+        """Create a new group - scoped to organization"""
+        org_uuid = uuid.UUID(organization_id)
+        # Check if group exists within this organization
+        result = await db.execute(
+            select(Group).where(
+                Group.name == name,
+                Group.organization_id == org_uuid
+            )
+        )
         if result.scalar_one_or_none():
-            raise ValueError("Group already exists")
+            raise ValueError("Group already exists in this organization")
         
         group = Group(
             name=name,
-            description=description
+            description=description,
+            organization_id=org_uuid
         )
         db.add(group)
         await db.commit()
@@ -52,9 +60,15 @@ class GroupService:
             raise ValueError("Group not found")
         
         if name and name != group.name:
-            result = await db.execute(select(Group).where(Group.name == name))
+            # Check if name exists in same organization
+            result = await db.execute(
+                select(Group).where(
+                    Group.name == name,
+                    Group.organization_id == group.organization_id
+                )
+            )
             if result.scalar_one_or_none():
-                raise ValueError("Group name already exists")
+                raise ValueError("Group name already exists in this organization")
             group.name = name
         
         if description is not None:
@@ -94,9 +108,18 @@ class GroupService:
             "created_at": group.created_at.isoformat() if group.created_at else ""
         }
     
-    async def list_groups(self, db: AsyncSession) -> List[Dict[str, Any]]:
-        """List groups"""
-        result = await db.execute(select(Group))
+    async def list_groups(
+        self, 
+        db: AsyncSession,
+        organization_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List groups - filtered by organization"""
+        query = select(Group)
+        if organization_id:
+            org_uuid = uuid.UUID(organization_id)
+            query = query.where(Group.organization_id == org_uuid)
+        
+        result = await db.execute(query)
         groups = result.scalars().all()
         
         return [
@@ -104,6 +127,7 @@ class GroupService:
                 "id": str(group.id),
                 "name": group.name,
                 "description": group.description or "",
+                "organization_id": str(group.organization_id) if group.organization_id else None,
                 "created_at": group.created_at.isoformat() if group.created_at else ""
             }
             for group in groups

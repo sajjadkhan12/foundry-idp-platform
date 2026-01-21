@@ -26,6 +26,7 @@ import { AdminJobs } from './pages/AdminJobs';
 import { AuditLogsPage } from './pages/AuditLogs';
 import { BusinessUnitsPage } from './pages/BusinessUnits';
 import { NotFoundPage } from './pages/NotFound';
+import { OrganizationsPage } from './pages/SuperAdmin/Organizations';
 import { Plugin } from './types';
 import ErrorBoundary from './components/ErrorBoundary';
 
@@ -111,6 +112,7 @@ const App: React.FC = () => {
                 <Route path="/admin/audit-logs" element={<ProtectedRoute adminOnly><Layout><AuditLogsPage /></Layout></ProtectedRoute>} />
                 <Route path="/admin/business-units" element={<ProtectedRoute><Layout><BusinessUnitsPage /></Layout></ProtectedRoute>} />
                 <Route path="/business-units" element={<ProtectedRoute><Layout><BusinessUnitsPage /></Layout></ProtectedRoute>} />
+                <Route path="/super-admin/organizations" element={<ProtectedRoute><Layout><OrganizationsPage /></Layout></ProtectedRoute>} />
 
                 {/* Redirect old welcome route to dashboard */}
                 <Route path="/welcome" element={<ProtectedRoute><Navigate to="/" replace /></ProtectedRoute>} />

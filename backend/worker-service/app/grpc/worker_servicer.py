@@ -46,7 +46,10 @@ class WorkerServicer(worker_pb2_grpc.WorkerServiceServicer):
     async def DestroyInfrastructure(self, request, context):
         """Destroy infrastructure"""
         try:
-            result = await worker_service.destroy_infrastructure(request.deployment_id)
+            result = await worker_service.destroy_infrastructure(
+                request.deployment_id,
+                request.job_id if request.job_id else None
+            )
             return worker_pb2.TaskResponse(
                 success=result["success"],
                 message=result["message"],
@@ -95,7 +98,10 @@ class WorkerServicer(worker_pb2_grpc.WorkerServiceServicer):
     async def DestroyMicroservice(self, request, context):
         """Destroy microservice"""
         try:
-            result = await worker_service.destroy_microservice(request.deployment_id)
+            result = await worker_service.destroy_microservice(
+                request.deployment_id,
+                request.job_id if request.job_id else None
+            )
             return worker_pb2.TaskResponse(
                 success=result["success"],
                 message=result["message"],

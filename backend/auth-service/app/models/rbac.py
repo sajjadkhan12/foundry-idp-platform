@@ -67,20 +67,34 @@ class Role(Base):
     __tablename__ = "roles"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[Optional[str]] = mapped_column(String(500))
     is_platform_role: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    # Organization isolation: NULL for system roles (platform-admin, super-admin), set for org-specific roles
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Unique constraint: name must be unique within an organization (or globally if organization_id is NULL)
+    __table_args__ = (
+        {"comment": "Roles are scoped to organizations. System roles (platform-admin, super-admin) have organization_id=NULL"}
+    )
 
 class Group(Base):
     __tablename__ = "groups"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[Optional[str]] = mapped_column(String(500))
+    # Organization isolation: groups are scoped to organizations
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Unique constraint: name must be unique within an organization
+    __table_args__ = (
+        {"comment": "Groups are scoped to organizations"}
+    )
 
 class PermissionMetadata(Base):
     __tablename__ = "permissions_metadata"

@@ -1,6 +1,6 @@
 """
 Database initialization module
-Creates default organization, admin user, and roles on first startup
+Creates foundry organization (platform owner), admin user, and roles on first startup
 """
 import os
 import logging
@@ -22,8 +22,9 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "<your-password>")
 
 async def init_database():
     """
-    Initialize database with default organization, admin user, and roles.
+    Initialize database with foundry organization (platform owner), admin user, and roles.
     This function is idempotent - it only creates if they don't exist.
+    The foundry organization is the platform owner that can create other organizations.
     """
     import asyncio
     
@@ -57,25 +58,25 @@ async def init_database():
                     logger.error(f"Current ADMIN_PASSWORD length: {len(ADMIN_PASSWORD)}")
                     return
                 
-                # Create or get default organization
+                # Create or get foundry organization (platform owner)
                 org_result = await db.execute(
-                    select(Organization).where(Organization.slug == "default")
+                    select(Organization).where(Organization.slug == "foundry")
                 )
                 org = org_result.scalar_one_or_none()
                 
                 if not org:
                     org = Organization(
-                        name="Default Organization",
-                        slug="default",
-                        description="Default organization for the platform",
+                        name="Foundry",
+                        slug="foundry",
+                        description="Platform owner organization - manages the platform and creates other organizations",
                         is_active=True
                     )
                     db.add(org)
                     await db.commit()
                     await db.refresh(org)
-                    logger.info(f"Created organization: {org.name} (slug: {org.slug})")
+                    logger.info(f"Created foundry organization: {org.name} (slug: {org.slug})")
                 else:
-                    logger.info(f"Using existing organization: {org.name} (slug: {org.slug})")
+                    logger.info(f"Using existing foundry organization: {org.name} (slug: {org.slug})")
                 
                 # Hash password
                 hashed_password = security_service.hash_password(ADMIN_PASSWORD)
@@ -111,15 +112,60 @@ async def init_database():
                     await db.refresh(role)
                     logger.info("Created platform-admin role")
                 
-                # Assign platform-admin role to admin user via Casbin
+                # Get or create super-admin role
+                super_admin_role_result = await db.execute(
+                    select(Role).where(Role.name == "super-admin")
+                )
+                super_admin_role = super_admin_role_result.scalar_one_or_none()
+                
+                if not super_admin_role:
+                    super_admin_role = Role(
+                        name="super-admin",
+                        description="Super administrator with access to all organizations",
+                        is_platform_role=True
+                    )
+                    db.add(super_admin_role)
+                    await db.commit()
+                    await db.refresh(super_admin_role)
+                    logger.info("Created super-admin role")
+                
+                # Get or create organization-admin role as Platform role
+                org_admin_role_result = await db.execute(
+                    select(Role).where(Role.name == "organization-admin")
+                )
+                org_admin_role = org_admin_role_result.scalar_one_or_none()
+                
+                if not org_admin_role:
+                    org_admin_role = Role(
+                        name="organization-admin",
+                        description="Organization administrator with full access within organization",
+                        is_platform_role=True
+                    )
+                    db.add(org_admin_role)
+                    await db.commit()
+                    await db.refresh(org_admin_role)
+                    logger.info("Created organization-admin role as Platform role")
+                elif not org_admin_role.is_platform_role:
+                    # Fix existing role that was created as Business unit - update to Platform
+                    org_admin_role.is_platform_role = True
+                    await db.commit()
+                    await db.refresh(org_admin_role)
+                    logger.info("Updated existing organization-admin role from Business unit to Platform role")
+                
+                # Assign roles to admin user via Casbin
                 org_domain = get_organization_domain(org)
                 enforcer = get_enforcer()
                 enforcer.set_org_domain(org_domain)
                 
                 if not enforcer.has_grouping_policy(str(admin_user.id), "platform-admin", org_domain):
                     enforcer.add_grouping_policy(str(admin_user.id), "platform-admin", org_domain)
-                    enforcer.save_policy()
                     logger.info(f"Assigned platform-admin role to {ADMIN_USERNAME}")
+                
+                if not enforcer.has_grouping_policy(str(admin_user.id), "super-admin", org_domain):
+                    enforcer.add_grouping_policy(str(admin_user.id), "super-admin", org_domain)
+                    logger.info(f"Assigned super-admin role to {ADMIN_USERNAME}")
+                
+                enforcer.save_policy()
                 
                 logger.info("✅ Database initialization complete!")
                 logger.info(f"Admin login: {ADMIN_EMAIL} or {ADMIN_USERNAME}")

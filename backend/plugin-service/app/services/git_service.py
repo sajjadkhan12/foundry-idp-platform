@@ -26,9 +26,30 @@ class GitService:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.github_token = settings.GITHUB_TOKEN
     
+    def get_github_token(self, organization_id: Optional[str] = None, business_unit_id: Optional[str] = None) -> str:
+        """
+        Get GitHub token with fallback: BU -> Org -> System
+        
+        Args:
+            organization_id: Optional organization ID
+            business_unit_id: Optional business unit ID
+        
+        Returns:
+            GitHub token string
+        """
+        if organization_id:
+            # Note: Plugin service would need to call auth-service via gRPC
+            # For now, fallback to system default
+            # TODO: Implement gRPC call to auth-service ConfigurationService
+            pass
+        
+        # Fallback to system default
+        return self.github_token
+    
     def _get_authenticated_url(self, repo_url: str, token: Optional[str] = None) -> str:
         """Convert repo URL to authenticated HTTPS URL if token is available"""
-        auth_token = token or self.github_token
+        # If a token is provided (org-specific), use it. Otherwise fallback to system default.
+        auth_token = token if token is not None else self.github_token
         if not auth_token:
             return repo_url
         
@@ -38,6 +59,9 @@ class GitService:
         elif repo_url.startswith("git@github.com:"):
             url = repo_url.replace("git@github.com:", f"https://{auth_token}@github.com/")
             return url
+        elif not repo_url.startswith("http") and not repo_url.startswith("git@") and "/" in repo_url:
+            # Handle short format "org/repo"
+            return f"https://{auth_token}@github.com/{repo_url}"
         else:
             return repo_url
     
@@ -46,7 +70,8 @@ class GitService:
         repo_url: str,
         branch: str,
         source_dir: Path,
-        commit_message: str = "Initial plugin upload"
+        commit_message: str = "Initial plugin upload",
+        token: Optional[str] = None
     ) -> None:
         """
         Initialize repository, create branch, copy files, and push to GitHub
@@ -60,7 +85,7 @@ class GitService:
         try:
             temp_repo_dir = Path(tempfile.mkdtemp(prefix="plugin_upload_"))
             
-            auth_url = self._get_authenticated_url(repo_url)
+            auth_url = self._get_authenticated_url(repo_url, token)
             try:
                 repo = Repo.clone_from(auth_url, str(temp_repo_dir), depth=1)
                 logger.info(f"Cloned repository to {temp_repo_dir}")

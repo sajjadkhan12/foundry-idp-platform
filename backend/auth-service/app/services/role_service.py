@@ -10,6 +10,8 @@ from app.models.rbac import Role
 from app.core.casbin import get_enforcer, invalidate_policy_cache
 from app.core.permission_registry import parse_permission_slug, find_permission_by_resource_action
 
+logger = logging.getLogger(__name__)
+
 
 class RoleService:
     """Service for role management operations"""
@@ -20,18 +22,32 @@ class RoleService:
         description: Optional[str],
         is_platform_role: bool,
         db: AsyncSession,
-        permissions: Optional[List[str]] = None
+        permissions: Optional[List[str]] = None,
+        organization_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Create a new role"""
-        # Check if role exists
-        result = await db.execute(select(Role).where(Role.name == name))
+        """Create a new role - scoped to organization if provided"""
+        # Check if role exists (within same organization or globally if system role)
+        query = select(Role).where(Role.name == name)
+        if organization_id:
+            # For org-scoped roles, check within organization
+            org_uuid = uuid.UUID(organization_id)
+            query = query.where(Role.organization_id == org_uuid)
+        else:
+            # For system roles, check globally (organization_id IS NULL)
+            query = query.where(Role.organization_id.is_(None))
+        
+        result = await db.execute(query)
         if result.scalar_one_or_none():
             raise ValueError("Role already exists")
+        
+        # System roles (platform-admin, super-admin) should have NULL organization_id
+        org_uuid = uuid.UUID(organization_id) if organization_id else None
         
         role = Role(
             name=name,
             description=description,
-            is_platform_role=is_platform_role
+            is_platform_role=is_platform_role,
+            organization_id=org_uuid
         )
         db.add(role)
         await db.commit()
@@ -135,15 +151,17 @@ class RoleService:
             raise ValueError("Role not found")
         
         role_name = role.name
-        await db.delete(role)
-        await db.commit()
         
-        # Remove all policies for this role from Casbin
+        # Remove all policies for this role from Casbin first (before deleting from DB)
         enforcer = get_enforcer()
         enforcer.enforcer.remove_filtered_policy(0, role_name)
         enforcer.enforcer.remove_filtered_grouping_policy(1, role_name)
         enforcer.save_policy()
         invalidate_policy_cache()
+        
+        # Delete from database
+        await db.delete(role)
+        await db.commit()
     
     async def get_role(self, role_id: str, db: AsyncSession) -> Dict[str, Any]:
         """Get role by ID with permissions"""
@@ -180,15 +198,79 @@ class RoleService:
     async def list_roles(
         self,
         platform_roles_only: bool,
-        db: AsyncSession
+        db: AsyncSession,
+        organization_id: Optional[str] = None,
+        include_system_roles: bool = False
     ) -> List[Dict[str, Any]]:
-        """List roles with permissions"""
+        """List roles with permissions - filtered by organization"""
         query = select(Role)
+        
+        # Filter by organization
+        if organization_id:
+            org_uuid = uuid.UUID(organization_id)
+            if include_system_roles:
+                # Check if this is Foundry organization (platform owner)
+                from app.models.rbac import Organization
+                org_result = await db.execute(
+                    select(Organization).where(Organization.id == org_uuid)
+                )
+                org = org_result.scalar_one_or_none()
+                is_foundry = org and org.slug == "foundry"
+                
+                from sqlalchemy import and_, or_
+                if is_foundry:
+                    # Foundry organization: include org roles + ALL system roles (platform-admin, super-admin, organization-admin)
+                    query = query.where(
+                        or_(
+                            Role.organization_id == org_uuid,
+                            Role.organization_id.is_(None)  # All system roles
+                        )
+                    )
+                else:
+                    # Other organizations: include org roles only (each org has its own organization-admin role)
+                    query = query.where(Role.organization_id == org_uuid)
+            else:
+                # Only org-specific roles
+                query = query.where(Role.organization_id == org_uuid)
+        else:
+            # If no org specified, only show system roles (for super admins)
+            query = query.where(Role.organization_id.is_(None))
+        
         if platform_roles_only:
             query = query.where(Role.is_platform_role == True)
         
         result = await db.execute(query)
         roles = result.scalars().all()
+        logger.info(f"DEBUG role_service.list_roles: Query returned {len(roles)} roles before filtering")
+        for role in roles:
+            logger.info(f"DEBUG role_service.list_roles: role={role.name}, org_id={role.organization_id}, is_platform={role.is_platform_role}")
+        
+        # CRITICAL: Additional client-side filtering
+        # This is needed because SQLAlchemy's OR condition might not work as expected in all cases
+        if organization_id and include_system_roles:
+            org_uuid = uuid.UUID(organization_id)
+            # Check if this is Foundry organization (platform owner)
+            from app.models.rbac import Organization
+            org_result = await db.execute(
+                select(Organization).where(Organization.id == org_uuid)
+            )
+            org = org_result.scalar_one_or_none()
+            is_foundry = org and org.slug == "foundry"
+            
+            filtered_roles = []
+            for role in roles:
+                if role.organization_id is not None:
+                    # Must be an org-specific role - check it matches
+                    if role.organization_id == org_uuid:
+                        filtered_roles.append(role)
+                else:
+                    # System role (organization_id is None)
+                    if is_foundry:
+                        # Foundry organization: include ALL system roles (platform-admin, super-admin, organization-admin)
+                        filtered_roles.append(role)
+                    # For other organizations, we DO NOT include system roles 
+                    # (they use their own specific organization-admin role)
+            roles = filtered_roles
         
         enforcer = get_enforcer()
         all_roles_data = []
@@ -211,6 +293,7 @@ class RoleService:
                 "name": role.name,
                 "description": role.description or "",
                 "is_platform_role": role.is_platform_role,
+                "organization_id": str(role.organization_id) if role.organization_id else None,
                 "created_at": role.created_at.isoformat() if role.created_at else "",
                 "permissions": list(set(permissions))
             })

@@ -153,7 +153,7 @@ class UserServicer(auth_pb2_grpc.UserServiceServicer):
                     request.limit,
                     request.search if request.search else None,
                     request.role_filter if request.role_filter else None,
-                    None,  # organization_id - can be added later
+                    request.organization_id if request.organization_id else None,
                     db
                 )
                 users = [

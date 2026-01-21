@@ -26,6 +26,7 @@ class PluginAccess(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     plugin_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     user_id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    organization_id: Mapped[Optional[uuid_module.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     business_unit_id: Mapped[Optional[uuid_module.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     granted_by: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -39,6 +40,7 @@ class PluginAccessRequest(Base):
     id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid_module.uuid4)
     plugin_id: Mapped[str] = mapped_column(String, nullable=False, index=True)  # Plugin IDs are strings like 'gcp-bucket'
     user_id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    organization_id: Mapped[Optional[uuid_module.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     business_unit_id: Mapped[Optional[uuid_module.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # Store as string to avoid enum issues
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

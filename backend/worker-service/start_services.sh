@@ -1,6 +1,37 @@
 #!/bin/bash
 # Start gRPC server, REST adapter, and Celery Worker (Beat is now in separate container)
 
+# Generate gRPC code from proto files if needed (for development with volume mounts)
+if [ -d "proto" ]; then
+    echo "Generating gRPC code from proto files..."
+    # Generate worker proto
+    python -m grpc_tools.protoc \
+        --proto_path=proto \
+        --python_out=proto \
+        --grpc_python_out=proto \
+        proto/worker.proto && \
+        touch proto/__init__.py && \
+        python -c "f=open('proto/worker_pb2_grpc.py','r'); content=f.read(); f.close(); content=content.replace('import worker_pb2 as worker__pb2', 'from proto import worker_pb2 as worker__pb2'); f=open('proto/worker_pb2_grpc.py','w'); f.write(content); f.close()"
+    
+    # Generate notification proto
+    python -m grpc_tools.protoc \
+        --proto_path=proto \
+        --python_out=proto \
+        --grpc_python_out=proto \
+        proto/notification.proto && \
+        python -c "f=open('proto/notification_pb2_grpc.py','r'); content=f.read(); f.close(); content=content.replace('import notification_pb2 as notification__pb2', 'from proto import notification_pb2 as notification__pb2'); f=open('proto/notification_pb2_grpc.py','w'); f.write(content); f.close()"
+    
+    # Generate auth proto (needed for fetching configuration)
+    python -m grpc_tools.protoc \
+        --proto_path=proto \
+        --python_out=proto \
+        --grpc_python_out=proto \
+        proto/auth.proto && \
+        python -c "f=open('proto/auth_pb2_grpc.py','r'); content=f.read(); f.close(); content=content.replace('import auth_pb2 as auth__pb2', 'from proto import auth_pb2 as auth__pb2'); f=open('proto/auth_pb2_grpc.py','w'); f.write(content); f.close()"
+    
+    echo "Proto generation complete."
+fi
+
 # Ensure Pulumi is in PATH
 export PATH="/root/.pulumi/bin:${PATH}"
 export PULUMI_HOME="/root/.pulumi"
@@ -20,26 +51,6 @@ trap cleanup SIGTERM SIGINT
 python -m app.grpc.server > /tmp/grpc.log 2>&1 &
 GRPC_PID=$!
 echo "Started gRPC server (PID: $GRPC_PID)"
-
-# Start Celery Worker in background (processes tasks)
-# Use nohup to ensure it continues running even if parent shell exits
-nohup celery -A app.workers worker --loglevel=info --concurrency=2 > /tmp/worker.log 2>&1 &
-WORKER_PID=$!
-echo "Started Celery Worker (PID: $WORKER_PID)"
-sleep 5  # Give worker time to start and register
-# Verify worker is running
-if ! kill -0 $WORKER_PID 2>/dev/null; then
-    echo "ERROR: Celery worker failed to start!"
-    cat /tmp/worker.log 2>&1 || echo "No worker.log available"
-    exit 1
-else
-    echo "Celery worker is running (PID: $WORKER_PID)"
-    # Show initial worker log to confirm it started
-    if [ -f /tmp/worker.log ]; then
-        echo "Worker log (first 10 lines):"
-        head -10 /tmp/worker.log || echo "Log file empty"
-    fi
-fi
 
 # Start REST adapter in foreground (keeps container alive)
 echo "Starting REST adapter..."

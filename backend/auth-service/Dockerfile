@@ -1,22 +1,42 @@
-FROM python:3.11-slim
+# Stage 1: Builder
+FROM python:3.11-slim-bookworm as builder
 
 WORKDIR /app
 
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN uv pip install --system --no-cache -r requirements.txt --target /install
+
+# Stage 2: Runtime
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy Python dependencies from builder
+COPY --from=builder /install /usr/local
 
 # Copy proto files
 COPY proto/ proto/
 
 # Copy application code
 COPY app/ app/
+
+# Copy proto fix script
+COPY fix_proto_imports.py .
 
 # Generate gRPC code from proto files (generate directly in proto directory)
 RUN python -m grpc_tools.protoc \
@@ -25,8 +45,7 @@ RUN python -m grpc_tools.protoc \
     --grpc_python_out=proto \
     proto/*.proto && \
     touch proto/__init__.py && \
-    # Fix import in generated grpc file using Python
-    python -c "f=open('proto/auth_pb2_grpc.py','r'); content=f.read(); f.close(); content=content.replace('import auth_pb2 as auth__pb2', 'from proto import auth_pb2 as auth__pb2'); f=open('proto/auth_pb2_grpc.py','w'); f.write(content); f.close(); f=open('proto/audit_pb2_grpc.py','r'); content=f.read(); f.close(); content=content.replace('import audit_pb2 as audit__pb2', 'from proto import audit_pb2 as audit__pb2'); f=open('proto/audit_pb2_grpc.py','w'); f.write(content); f.close()"
+    python fix_proto_imports.py
 
 # Copy startup script
 COPY start_services.sh /app/start_services.sh

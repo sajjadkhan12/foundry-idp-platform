@@ -187,6 +187,8 @@ const Provision: React.FC = () => {
         const isMicroservice = deploymentType === 'microservice' || pluginInfo?.deployment_type === 'microservice' || manifest?.deployment_type === 'microservice';
         if (isMicroservice) {
             initialInputs['deployment_name'] = '';
+            initialInputs['target_cluster'] = '';
+            initialInputs['namespace'] = '';
         }
 
         // Use manifest inputs if they exist (works for both infra and microservices now)
@@ -622,6 +624,37 @@ const Provision: React.FC = () => {
                                             This name will be used for the GitHub repository.
                                         </p>
                                     </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-2">
+                                                <Cpu className="w-4 h-4 text-orange-500" />
+                                                Target Cluster <span className="text-red-500">*</span>
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={inputs['target_cluster'] || ''}
+                                                onChange={(e) => handleInputChange('target_cluster', e.target.value)}
+                                                placeholder="e.g., prod-cluster-01"
+                                                className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
+                                                required
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-2">
+                                                <Box className="w-4 h-4 text-blue-500" />
+                                                Namespace <span className="text-red-500">*</span>
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={inputs['namespace'] || ''}
+                                                onChange={(e) => handleInputChange('namespace', e.target.value)}
+                                                placeholder="e.g., staging"
+                                                className="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all"
+                                                required
+                                            />
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
@@ -629,7 +662,7 @@ const Provision: React.FC = () => {
                             {manifest.inputs?.properties && Object.keys(manifest.inputs.properties).length > 0 && (
                                 <div className="space-y-6 pt-4 border-t border-gray-100 dark:border-gray-800">
                                     {Object.entries(manifest.inputs.properties)
-                                        .filter(([key]) => key !== 'deployment_name')
+                                        .filter(([key]) => !['deployment_name', 'target_cluster', 'namespace'].includes(key))
                                         .map(([key, prop]: [string, any]) => {
                                             const isRequired = manifest.inputs.required?.includes(key);
                                             return (

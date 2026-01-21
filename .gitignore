@@ -59,6 +59,3 @@ frontend/build/
 
 # Docker
 *.dockerignore
-
-# Docker Compose
-*.docker-compose.yml

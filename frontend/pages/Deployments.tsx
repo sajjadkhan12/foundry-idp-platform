@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
     Server, ExternalLink, Clock, Search, Filter, X,
@@ -51,7 +51,7 @@ export const DeploymentsPage: React.FC = () => {
     const isFilterResetRef = useRef(false);
 
     // Fetching data
-    const fetchDeployments = async (skipPolling = false) => {
+    const fetchDeployments = async (skipPolling = false, overridePage?: number) => {
         if (isLoadingBusinessUnits) return;
 
         // Check BU access for regular users
@@ -61,10 +61,12 @@ export const DeploymentsPage: React.FC = () => {
             return;
         }
 
+        const effectivePage = overridePage !== undefined ? overridePage : currentPage;
+
         if (!skipPolling) setLoading(true);
 
         try {
-            const skip = (currentPage - 1) * itemsPerPage;
+            const skip = (effectivePage - 1) * itemsPerPage;
             const params: Record<string, string | number> = {
                 skip,
                 limit: itemsPerPage
@@ -115,8 +117,8 @@ export const DeploymentsPage: React.FC = () => {
                 items = response;
                 setTotalItems(response.length);
             } else {
-                items = response.items || [];
-                setTotalItems(response.total || 0);
+                items = response.deployments || [];
+                setTotalItems(response.total || response.deployments?.length || 0);
             }
 
             // Client side date filtering
@@ -132,14 +134,7 @@ export const DeploymentsPage: React.FC = () => {
             }
 
             setDeployments(filtered);
-            setFilteredDeployments(filtered);
-
-            if (dateFromFilter || dateToFilter) {
-                setTotalItems(filtered.length);
-            }
-        } catch (err: any) {
-            appLogger.error('Failed to fetch deployments:', err);
-            if (!skipPolling) setError(err.message || 'Failed to load deployments');
+            setTotalItems(response.total || filtered.length);
         } finally {
             setLoading(false);
         }
@@ -170,13 +165,42 @@ export const DeploymentsPage: React.FC = () => {
         // fetchDeployments is triggered by filters effect
     }, [isAdmin, isOwner, location.search]);
 
-    // Debounced filter effect
+    // Instant client-side filtering + memoized results
+    const filteredResults = useMemo(() => {
+        if (!searchQuery.trim()) return deployments;
+
+        const query = searchQuery.toLowerCase();
+        return deployments.filter(d =>
+            (d.name && d.name.toLowerCase().includes(query)) ||
+            (d.plugin_id && d.plugin_id.toLowerCase().includes(query)) ||
+            (d.stack_name && d.stack_name.toLowerCase().includes(query)) ||
+            (d.github_repo_name && d.github_repo_name.toLowerCase().includes(query)) ||
+            (d.region && d.region.toLowerCase().includes(query))
+        );
+    }, [searchQuery, deployments]);
+
+    // Active Filter Count (including search)
+    const activeFilterCount = useMemo(() => {
+        return [
+            searchQuery.trim() !== '',
+            statusFilter !== 'all',
+            providerFilter !== 'all',
+            environmentFilter !== 'all',
+            userFilter !== 'all',
+            !!dateFromFilter,
+            !!selectedBusinessUnitFilter
+        ].filter(Boolean).length;
+    }, [searchQuery, statusFilter, providerFilter, environmentFilter, userFilter, dateFromFilter, selectedBusinessUnitFilter]);
+
+    // Debounced filter effect for full backend results
     useEffect(() => {
+        // If we have deployments, we can filter them instantly, but we still want to fetch
+        // full results from the backend in case there are matching items on other pages.
         const timeoutId = setTimeout(() => {
             isFilterResetRef.current = true;
             setCurrentPage(1);
-            fetchDeployments();
-        }, 500);
+            fetchDeployments(true, 1);
+        }, 300);
         return () => clearTimeout(timeoutId);
     }, [searchQuery, statusFilter, providerFilter, environmentFilter, userFilter, tagFilters, selectedBusinessUnitFilter, activeBusinessUnit?.id]);
 
@@ -248,13 +272,19 @@ export const DeploymentsPage: React.FC = () => {
                                 placeholder="Search by name, plugin, stack, region..."
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                className="w-full pl-12 pr-12 py-3.5 bg-gray-50/50 dark:bg-gray-800/50 border-2 border-transparent focus:border-orange-500/20 rounded-2xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none transition-all duration-300"
+                                className={`w-full pl-12 pr-12 py-3.5 bg-gray-50/50 dark:bg-gray-800/50 border-2 rounded-2xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none transition-all duration-300 ${searchQuery ? 'border-orange-500/20 shadow-lg shadow-orange-500/5' : 'border-transparent'
+                                    }`}
                             />
-                            {searchQuery && (
-                                <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors">
-                                    <X className="w-4 h-4 text-gray-400" />
-                                </button>
-                            )}
+                            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                                {loading && searchQuery && (
+                                    <Loader2 className="w-4 h-4 text-orange-500 animate-spin" />
+                                )}
+                                {searchQuery && (
+                                    <button onClick={() => setSearchQuery('')} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors">
+                                        <X className="w-4 h-4 text-gray-400" />
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
                         {/* Right side controls */}
@@ -343,9 +373,9 @@ export const DeploymentsPage: React.FC = () => {
                             >
                                 <Filter className="w-5 h-5" />
                                 <span>Filters</span>
-                                {hasActiveFilters && (
+                                {activeFilterCount > 0 && (
                                     <span className="ml-1 w-5 h-5 flex items-center justify-center bg-orange-500 text-white text-[10px] rounded-full">
-                                        {[statusFilter !== 'all', providerFilter !== 'all', environmentFilter !== 'all', userFilter !== 'all', !!dateFromFilter].filter(Boolean).length}
+                                        {activeFilterCount}
                                     </span>
                                 )}
                             </button>
@@ -466,7 +496,7 @@ export const DeploymentsPage: React.FC = () => {
                     <Loader2 className="w-12 h-12 text-orange-500 animate-spin" />
                     <p className="text-gray-500 font-bold animate-pulse">Syncing deployments...</p>
                 </div>
-            ) : filteredDeployments.length === 0 ? (
+            ) : filteredResults.length === 0 ? (
                 <div className="bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-3xl p-16 text-center animate-in fade-in zoom-in-95 duration-700">
                     <div className="w-20 h-20 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-6">
                         <LayoutGrid className="w-10 h-10 text-gray-400" />
@@ -480,70 +510,94 @@ export const DeploymentsPage: React.FC = () => {
                     </button>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4">
-                    {filteredDeployments.map((deploy) => (
-                        <Link
-                            key={deploy.id}
-                            to={`/deployment/${deploy.id}`}
-                            className="group relative h-full flex flex-col bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border border-gray-200 dark:border-gray-800 rounded-3xl p-5 hover:border-orange-500/50 hover:shadow-2xl hover:shadow-orange-500/10 transition-all duration-500"
-                        >
-                            <div className="flex items-start justify-between mb-4">
-                                <div className="flex items-center gap-4 min-w-0">
-                                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-orange-500/20 group-hover:scale-110 transition-transform duration-500">
-                                        <Server className="w-7 h-7 text-white" />
-                                    </div>
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <h3 className="text-lg font-black text-gray-900 dark:text-white truncate group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors">
-                                                {deploy.name}
-                                            </h3>
+                <div className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border border-gray-200 dark:border-gray-800 rounded-3xl overflow-hidden shadow-2xl">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/50">
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider">Deployment</th>
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider">Environment</th>
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider">Provider</th>
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider">Est. Cost</th>
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider">Created</th>
+                                    <th className="px-6 py-4 text-xs font-black text-gray-500 uppercase tracking-wider text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                {filteredResults.map((deploy) => (
+                                    <tr
+                                        key={deploy.id}
+                                        className="hover:bg-gray-50/80 dark:hover:bg-gray-800/80 transition-colors group"
+                                    >
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-orange-500/10 transition-transform group-hover:scale-105">
+                                                    <Server className="w-5 h-5 text-white" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <Link
+                                                        to={`/deployment/${deploy.id}`}
+                                                        className="text-sm font-bold text-gray-900 dark:text-white hover:text-orange-600 dark:hover:text-orange-400 transition-colors block truncate"
+                                                    >
+                                                        {searchQuery ? (
+                                                            deploy.name.split(new RegExp(`(${searchQuery})`, 'gi')).map((part, i) =>
+                                                                part.toLowerCase() === searchQuery.toLowerCase() ?
+                                                                    <span key={i} className="text-orange-600 dark:text-orange-400 group-hover:bg-orange-100 dark:group-hover:bg-orange-900/30 rounded px-0.5">{part}</span> : part
+                                                            )
+                                                        ) : deploy.name}
+                                                    </Link>
+                                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                                        <PluginBadge pluginId={deploy.plugin_id} provider={deploy.cloud_provider} size="xs" />
+                                                        <span className="text-[10px] text-gray-500 font-bold uppercase tracking-tight">v{deploy.version || '1.0.0'}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <StatusBadge status={deploy.status} />
+                                        </td>
+                                        <td className="px-6 py-4">
                                             {deploy.environment && <EnvironmentBadge environment={deploy.environment} size="sm" />}
-                                            <PluginBadge pluginId={deploy.plugin_id} provider={deploy.cloud_provider} />
-                                        </div>
-                                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-1 font-bold">
-                                            <span className="truncate">{deploy.github_repo_name || 'No repository'}</span>
-                                            <span>•</span>
-                                            <span>v{deploy.version || '1.0.0'}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <StatusBadge status={deploy.status} />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3 mt-auto pt-4 border-t border-gray-100 dark:border-gray-800">
-                                <div className="bg-gray-50/50 dark:bg-gray-800/50 px-3 py-2 rounded-xl">
-                                    <span className="text-[10px] uppercase font-black text-gray-400 dark:text-gray-500 block mb-1">Provider</span>
-                                    <div className="flex items-center gap-1.5">
-                                        <CloudProviderBadge provider={deploy.cloud_provider || 'aws'} size="sm" />
-                                        <span className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase">{deploy.cloud_provider || 'AWS'}</span>
-                                    </div>
-                                </div>
-                                <div className="bg-gray-50/50 dark:bg-gray-800/50 px-3 py-2 rounded-xl">
-                                    <span className="text-[10px] uppercase font-black text-gray-400 dark:text-gray-500 block mb-1">Region</span>
-                                    <div className="flex items-center gap-1.5">
-                                        <RegionBadge region={deploy.region || 'us-east-1'} size="sm" />
-                                        <span className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase">{deploy.region || 'US-EAST-1'}</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="mt-4 flex items-center justify-between text-xs text-gray-400 font-bold px-1">
-                                <div className="flex items-center gap-1.5">
-                                    <Clock className="w-3.5 h-3.5" />
-                                    <span>{new Date(deploy.created_at).toLocaleDateString()}</span>
-                                </div>
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-x-1 group-hover:translate-x-0 transition-transform duration-300">
-                                    <span className="text-orange-600 dark:text-orange-400 font-black uppercase">View Details</span>
-                                    <ExternalLink className="w-3.5 h-3.5 text-orange-500" />
-                                </div>
-                            </div>
-                        </Link>
-                    ))}
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-2">
+                                                <CloudProviderBadge provider={deploy.cloud_provider || 'aws'} size="xs" />
+                                                <span className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase">{deploy.cloud_provider || 'AWS'}</span>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <span className="text-sm font-bold text-green-600 dark:text-green-400">
+                                                {(deploy as any).estimated_monthly_cost ? `$${parseFloat((deploy as any).estimated_monthly_cost).toFixed(2)}` : '-'}
+                                            </span>
+                                            <span className="text-xs text-gray-500 dark:text-gray-400 ml-1">/mo</span>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-1.5 text-xs text-gray-500 font-bold">
+                                                <Clock className="w-3.5 h-3.5" />
+                                                <span>{new Date(deploy.created_at).toLocaleDateString()}</span>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 text-right">
+                                            <Link
+                                                to={`/deployment/${deploy.id}`}
+                                                className="inline-flex items-center gap-1 text-xs font-black text-orange-600 dark:text-orange-400 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all transform translate-x-1 group-hover:translate-x-0"
+                                            >
+                                                Details
+                                                <ExternalLink className="w-3 h-3" />
+                                            </Link>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             )}
 
             {/* Modals and Pagination */}
             <BusinessUnitWarningModal
+
                 isOpen={showBusinessUnitWarning}
                 onClose={() => setShowBusinessUnitWarning(false)}
                 onSelectBusinessUnit={() => {
@@ -553,19 +607,21 @@ export const DeploymentsPage: React.FC = () => {
                 action="view deployments"
             />
 
-            {totalItems > 0 && (
-                <div className="mt-8">
-                    <Pagination
-                        currentPage={currentPage}
-                        totalPages={Math.ceil(totalItems / itemsPerPage)}
-                        totalItems={totalItems}
-                        itemsPerPage={itemsPerPage}
-                        onPageChange={setCurrentPage}
-                        onItemsPerPageChange={setItemsPerPage}
-                        showItemsPerPage={true}
-                    />
-                </div>
-            )}
-        </div>
+            {
+                totalItems > 0 && (
+                    <div className="mt-8">
+                        <Pagination
+                            currentPage={currentPage}
+                            totalPages={Math.ceil(totalItems / itemsPerPage)}
+                            totalItems={totalItems}
+                            itemsPerPage={itemsPerPage}
+                            onPageChange={setCurrentPage}
+                            onItemsPerPageChange={setItemsPerPage}
+                            showItemsPerPage={true}
+                        />
+                    </div>
+                )
+            }
+        </div >
     );
 };

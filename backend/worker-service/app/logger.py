@@ -24,7 +24,7 @@ formatter = logging.Formatter(
 
 # Console handler for WARNING and above (reduce verbosity)
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.WARNING)
+console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 root_logger.addHandler(console_handler)
 

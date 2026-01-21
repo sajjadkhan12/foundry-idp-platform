@@ -8,6 +8,8 @@ import re
 import httpx
 import os
 from pathlib import Path
+import base64
+from cryptography.fernet import Fernet
 from typing import Dict, Any, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, cast, text
@@ -37,15 +39,19 @@ def to_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
         return None
 
 
-async def get_admins_and_bu_owners(business_unit_id: Optional[str]) -> List[str]:
+async def get_admins_and_bu_owners(business_unit_id: Optional[str], token: Optional[str] = None) -> List[str]:
     """Get list of admin and BU owner user IDs to notify for plugin access requests"""
     user_ids = []
+    
+    # Use Bearer token for authentication if provided
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     
     try:
         async with httpx.AsyncClient() as client:
             # Get all users from auth service
             response = await client.get(
                 "http://auth-service:8000/api/v1/users",
+                headers=headers,
                 timeout=5.0
             )
             
@@ -64,6 +70,7 @@ async def get_admins_and_bu_owners(business_unit_id: Optional[str]) -> List[str]
                                 "resource": "platform",
                                 "action": "upload"
                             },
+                            headers=headers,
                             timeout=5.0
                         )
                         
@@ -80,6 +87,7 @@ async def get_admins_and_bu_owners(business_unit_id: Optional[str]) -> List[str]
                 try:
                     bu_response = await client.get(
                         f"http://auth-service:8000/api/v1/business-units/{business_unit_id}/members",
+                        headers=headers,
                         timeout=5.0
                     )
                     
@@ -97,6 +105,7 @@ async def get_admins_and_bu_owners(business_unit_id: Optional[str]) -> List[str]
                                     "action": "manage_members",
                                     "business_unit_id": business_unit_id
                                 },
+                                headers=headers,
                                 timeout=5.0
                             )
                             
@@ -114,9 +123,10 @@ async def get_admins_and_bu_owners(business_unit_id: Optional[str]) -> List[str]
     return user_ids
 
 
-async def send_notification(user_id: str, title: str, message: str, notification_type: str = "info", link: str = ""):
+async def send_notification(user_id: str, title: str, message: str, notification_type: str = "info", link: str = "", token: Optional[str] = None):
     """Send notification to user via notification-service"""
     try:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "http://notification-service:8000/api/v1/notifications",
@@ -127,6 +137,7 @@ async def send_notification(user_id: str, title: str, message: str, notification
                     "type": notification_type,
                     "link": link
                 },
+                headers=headers,
                 timeout=5.0
             )
             if response.status_code == 201:
@@ -148,6 +159,61 @@ async def send_notification(user_id: str, title: str, message: str, notification
 class PluginService:
     """Service for plugin operations"""
     
+    async def _get_org_config(
+        self,
+        organization_id: uuid.UUID,
+        config_key: str,
+        db: AsyncSession
+    ) -> Optional[str]:
+        """Get decrypted organization configuration via raw SQL"""
+        try:
+            # Check if encryption key is available
+            if not settings.ENCRYPTION_KEY:
+                # Try to use default key for dev if not set (mirroring auth-service behavior roughly)
+                # But mostly we should just return None
+                return None
+                
+            # Query organization_configurations
+            query = text("""
+                SELECT config_value_encrypted 
+                FROM organization_configurations 
+                WHERE organization_id = :org_id 
+                AND config_key = :key 
+                AND is_active = true
+            """)
+            
+            result = await db.execute(query, {"org_id": organization_id, "key": config_key})
+            row = result.fetchone()
+            
+            logger.debug(f"DB Query for {config_key} on org {organization_id} returned: {row is not None}")
+            
+            if not row:
+                logger.debug(f"Config {config_key} NOT FOUND for org {organization_id}")
+                return None
+                
+            encrypted_value = row[0]
+            logger.debug(f"Found encrypted config for {config_key}, length: {len(encrypted_value)}")
+            
+            # Decrypt
+            try:
+                key = settings.ENCRYPTION_KEY.encode()
+                cipher = Fernet(key)
+                
+                encrypted_bytes = base64.b64decode(encrypted_value.encode())
+                decrypted_bytes = cipher.decrypt(encrypted_bytes)
+                decrypted_json = decrypted_bytes.decode()
+                decrypted_data = json.loads(decrypted_json)
+                
+                value = decrypted_data.get("value") if isinstance(decrypted_data, dict) else str(decrypted_data)
+                return value
+            except Exception as decrypt_error:
+                logger.error(f"Decryption failed for {config_key}: {decrypt_error}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch config {config_key}: {e}", exc_info=True)
+            return None
+
     async def upload_plugin(
         self,
         file_content: bytes,
@@ -155,12 +221,24 @@ class PluginService:
         git_repo_url: Optional[str],
         git_branch: Optional[str],
         user_id: str,
-        db: AsyncSession
+        organization_id: Optional[str],
+        db: AsyncSession,
+        token: Optional[str] = None
     ) -> Dict[str, Any]:
         """Upload a plugin ZIP file"""
         # Validate file
         if not filename or not filename.endswith('.zip'):
             raise ValueError("Only ZIP files are accepted")
+        
+        # Validate organization_id is provided
+        if not organization_id:
+            raise ValueError("Organization ID is required for plugin upload")
+        
+        # Convert organization_id to UUID
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError(f"Invalid organization ID: {organization_id}")
         
         # Save to temporary file for validation
         with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
@@ -176,21 +254,37 @@ class PluginService:
             plugin_id = manifest['id']
             version = manifest['version']
             
-            # Check if plugin exists
-            result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+            # Check if plugin exists in this organization
+            result = await db.execute(
+                select(Plugin).where(
+                    Plugin.id == plugin_id,
+                    Plugin.organization_id == org_uuid
+                )
+            )
             plugin = result.scalar_one_or_none()
             
             if not plugin:
+                # Check if plugin exists in another organization
+                result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+                existing_plugin = result.scalar_one_or_none()
+                if existing_plugin:
+                    raise ValueError(f"Plugin '{plugin_id}' already exists in another organization")
+                
                 # Create new plugin
                 plugin = Plugin(
                     id=plugin_id,
                     name=manifest.get('name', plugin_id),
                     description=manifest.get('description'),
-                    author=manifest.get('author')
+                    author=manifest.get('author'),
+                    organization_id=org_uuid
                 )
                 db.add(plugin)
+            else:
+                # Update organization_id if it was null (migration case)
+                if plugin.organization_id != org_uuid:
+                    plugin.organization_id = org_uuid
             
-            # Check if version exists
+            # Check if version exists for this plugin in this organization
             result = await db.execute(
                 select(PluginVersion).where(
                     PluginVersion.plugin_id == plugin_id,
@@ -201,10 +295,26 @@ class PluginService:
             if existing_version:
                 raise ValueError(f"Plugin '{plugin_id}' version '{version}' already exists")
             
-            # Determine Git repository URL
-            config_repo_url = settings.GITHUB_REPOSITORY.strip() if settings.GITHUB_REPOSITORY else None
-            final_git_repo_url = git_repo_url or config_repo_url
+            # Fetch org-specific Git configuration
+            org_repo_url = await self._get_org_config(org_uuid, "GITHUB_REPOSITORY", db)
+            if not org_repo_url:
+                # Fallback to legacy key
+                org_repo_url = await self._get_org_config(org_uuid, "GITHUB_REPO", db)
+                if org_repo_url:
+                    logger.info(f"Using legacy GITHUB_REPO config for org {org_uuid}")
+
+            org_token = await self._get_org_config(org_uuid, "GITHUB_TOKEN", db)
+
+            if not org_repo_url or not org_token:
+                logger.error(f"Organization {org_uuid} is missing required GitHub configuration (GITHUB_REPOSITORY or GITHUB_TOKEN)")
+                raise ValueError(
+                    "Organization configuration missing. Please configure your GitHub repository and token in Settings "
+                    "before uploading plugins."
+                )
+
+            final_git_repo_url = git_repo_url or org_repo_url
             final_git_branch = git_branch
+            final_token = org_token
             
             # Save to storage
             storage_path = storage_service.save_plugin(plugin_id, version, file_content)
@@ -256,13 +366,16 @@ class PluginService:
                         repo_url=final_git_repo_url,
                         branch=final_git_branch,
                         source_dir=extract_dir,
-                        commit_message=f"Upload plugin {plugin_id} version {version}"
+                        commit_message=f"Upload plugin {plugin_id} version {version}",
+                        token=final_token
                     )
                 except Exception as e:
                     logger.error(f"Failed to push plugin to GitHub: {e}", exc_info=True)
-                    if git_repo_url:  # If explicitly provided, fail
+                    # If a repository was determined (either explicitly or via org config), fail the upload
+                    if final_git_repo_url:
                         raise ValueError(f"Failed to push plugin to GitHub: {str(e)}")
-                    # Otherwise, continue without GitOps
+                    
+                    # Otherwise (shouldn't happen with strict check), continue without GitOps
                     final_git_repo_url = None
                     final_git_branch = None
             
@@ -305,7 +418,9 @@ class PluginService:
         template_path: str,
         author: Optional[str],
         user_id: str,
+        organization_id: Optional[str],
         db: AsyncSession,
+        token: Optional[str] = None,
         inputs: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Create a microservice template"""
@@ -315,18 +430,40 @@ class PluginService:
         if not template_path.strip():
             raise ValueError("Template path is required")
         
-        # Check if plugin exists
-        result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+        # Validate organization_id is provided
+        if not organization_id:
+            raise ValueError("Organization ID is required for plugin upload")
+        
+        # Convert organization_id to UUID
+        try:
+            org_uuid = uuid.UUID(organization_id)
+        except ValueError:
+            raise ValueError(f"Invalid organization ID: {organization_id}")
+        
+        # Check if plugin exists in this organization
+        result = await db.execute(
+            select(Plugin).where(
+                Plugin.id == plugin_id,
+                Plugin.organization_id == org_uuid
+            )
+        )
         plugin = result.scalar_one_or_none()
         
         if not plugin:
+            # Check if plugin exists in another organization
+            result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+            existing_plugin = result.scalar_one_or_none()
+            if existing_plugin:
+                raise ValueError(f"Plugin '{plugin_id}' already exists in another organization")
+            
             plugin = Plugin(
                 id=plugin_id,
                 name=name,
                 description=description,
                 author=author or user_id,
                 deployment_type="microservice",
-                is_locked=False
+                is_locked=False,
+                organization_id=org_uuid
             )
             db.add(plugin)
         else:
@@ -335,6 +472,9 @@ class PluginService:
             plugin.deployment_type = "microservice"
             if author:
                 plugin.author = author
+            # Ensure organization_id is set
+            if plugin.organization_id != org_uuid:
+                plugin.organization_id = org_uuid
         
         await db.flush()
         
@@ -407,7 +547,8 @@ class PluginService:
         user_email: str,
         business_unit_id: Optional[str],
         organization_id: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a provisioning job"""
         logger.info(f"Provisioning job starting for {plugin_id}:{version}, user: {user_email}")
@@ -428,10 +569,20 @@ class PluginService:
             if not plugin_version:
                 raise ValueError(f"Plugin {plugin_id} version {version} not found")
         
-            # Get plugin
-            result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+            # Get plugin - EXPLICITLY filter by organization_id if provided
+            query = select(Plugin).where(Plugin.id == plugin_id)
+            if organization_id:
+                try:
+                    org_uuid = uuid.UUID(organization_id)
+                    query = query.where(Plugin.organization_id == org_uuid)
+                except ValueError:
+                    raise ValueError(f"Invalid organization ID: {organization_id}")
+            
+            result = await db.execute(query)
             plugin = result.scalar_one_or_none()
             if not plugin:
+                if organization_id:
+                    raise ValueError(f"Plugin {plugin_id} not found or access denied for organization {organization_id}")
                 raise ValueError(f"Plugin {plugin_id} not found")
             
             deployment_type = plugin.deployment_type or "infrastructure"
@@ -450,7 +601,7 @@ class PluginService:
             await db.execute(
                 text("""
                     INSERT INTO jobs (id, plugin_version_id, deployment_id, status, triggered_by, inputs, retry_count, created_at)
-                    VALUES (:id, :plugin_version_id, :deployment_id, CAST(:status AS jobstatus), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
+                    VALUES (:id, :plugin_version_id, :deployment_id, CAST(:status AS job_status_enum), :triggered_by, CAST(:inputs AS jsonb), 0, NOW())
                 """),
                 {
                     "id": job_id,
@@ -509,6 +660,7 @@ class PluginService:
                             "cost_center": cost_center or "",
                             "project_code": project_code or ""
                         },
+                        headers={"Authorization": f"Bearer {token}"} if token else {},
                         timeout=10.0
                     )
                     
@@ -537,6 +689,7 @@ class PluginService:
                                     await client.post(
                                         f"http://deployment-service:8000/api/v1/deployments/{deployment_id}/tags",
                                         json={"key": key, "value": value},
+                                        headers={"Authorization": f"Bearer {token}"} if token else {},
                                         timeout=5.0
                                     )
                                 except Exception:
@@ -583,6 +736,7 @@ class PluginService:
                                 "deployment_id": deployment_id or job.deployment_id or "",
                                 "inputs": inputs
                             },
+                            headers={"Authorization": f"Bearer {token}"} if token else {},
                             timeout=30.0
                         )
                     else:
@@ -602,6 +756,7 @@ class PluginService:
                                 "credential_name": credential_name or None,
                                 "deployment_id": (deployment_id or job.deployment_id or "") if (deployment_id or job.deployment_id) else None
                             },
+                            headers={"Authorization": f"Bearer {token}"} if token else {},
                             timeout=30.0
                         )
                     
@@ -655,11 +810,11 @@ class PluginService:
         return {
             "id": job.id,
             "plugin_version_id": job.plugin_version_id,
-            "deployment_id": job.deployment_id or "",
+            "deployment_id": str(job.deployment_id) if job.deployment_id else "",
             "status": job.status if isinstance(job.status, str) else job.status.value,
             "triggered_by": job.triggered_by,
-            "inputs": json.dumps(job.inputs),
-            "outputs": json.dumps(job.outputs) if job.outputs else "",
+            "inputs": json.dumps(job.inputs) if isinstance(job.inputs, dict) else str(job.inputs),
+            "outputs": json.dumps(job.outputs) if job.outputs and isinstance(job.outputs, dict) else str(job.outputs) if job.outputs else "",
             "retry_count": job.retry_count,
             "error_state": job.error_state or "",
             "error_message": job.error_message or "",
@@ -671,66 +826,117 @@ class PluginService:
         self,
         user_id: str,
         business_unit_id: Optional[str],
-        skip: int,
-        limit: int,
-        status: Optional[str],
-        db: AsyncSession
+        organization_id: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+        status: Optional[str] = None,
+        db: AsyncSession = None
     ) -> Dict[str, Any]:
-        """List jobs with filters"""
-        # Build query
-        query = select(Job)
+        """List jobs with filters - automatically filtered by organization if provided"""
+        if db is None:
+            from app.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                return await self.list_jobs(
+                    user_id, business_unit_id, organization_id, skip, limit, status, db
+                )
         
-        # Filter by business unit if provided
-        if business_unit_id:
-            bu_id_str = str(business_unit_id)
-            query = query.where(
-                cast(Job.inputs, JSONB)['_business_unit_id'].astext == bu_id_str
-            )
-        
-        # Filter by status if provided
-        if status:
-            query = query.where(Job.status == JobStatus(status))
-        
-        # Get total count
-        count_query = select(func.count()).select_from(Job)
-        if business_unit_id:
-            bu_id_str = str(business_unit_id)
-            count_query = count_query.where(
-                cast(Job.inputs, JSONB)['_business_unit_id'].astext == bu_id_str
-            )
-        if status:
-            count_query = count_query.where(Job.status == JobStatus(status))
-        
-        total_result = await db.execute(count_query)
-        total = total_result.scalar_one()
-        
-        # Get paginated results
-        query = query.order_by(Job.created_at.desc()).offset(skip).limit(limit)
-        result = await db.execute(query)
-        jobs = result.scalars().all()
-        
-        return {
-            "jobs": [
-                {
-                    "id": j.id,
-                    "plugin_version_id": j.plugin_version_id,
-                    "deployment_id": j.deployment_id or "",
-                    "status": j.status if isinstance(j.status, str) else j.status.value,
-                    "triggered_by": j.triggered_by,
-                    "inputs": json.dumps(j.inputs),
-                    "outputs": json.dumps(j.outputs) if j.outputs else "",
-                    "retry_count": j.retry_count,
-                    "error_state": j.error_state or "",
-                    "error_message": j.error_message or "",
-                    "created_at": j.created_at.isoformat() if j.created_at else "",
-                    "finished_at": j.finished_at.isoformat() if j.finished_at else ""
-                }
-                for j in jobs
-            ],
-            "total": total,
-            "skip": skip,
-            "limit": limit
-        }
+        try:
+            # Build query using raw SQL for cross-schema filtering
+            # Since User model is in auth-service, we use raw SQL to join
+            from sqlalchemy import text
+            
+            # Base query
+            base_conditions = []
+            params = {}
+            
+            # Filter by organization (join with users table on triggered_by = email)
+            if organization_id:
+                try:
+                    org_uuid = uuid.UUID(organization_id)
+                    base_conditions.append("""
+                        jobs.triggered_by IN (
+                            SELECT email FROM users WHERE organization_id = :org_id
+                        )
+                    """)
+                    params['org_id'] = str(org_uuid)
+                except ValueError:
+                    pass
+            
+            # Filter by business unit
+            if business_unit_id:
+                base_conditions.append("(jobs.inputs->>'_business_unit_id')::text = :bu_id")
+                params['bu_id'] = str(business_unit_id)
+            
+            # Filter by status
+            if status:
+                # Cast status to text to avoid enum type issues
+                base_conditions.append("CAST(jobs.status AS text) = :status")
+                params['status'] = status
+            
+            # Build WHERE clause
+            where_clause = " AND ".join(base_conditions) if base_conditions else "1=1"
+            
+            # Get total count
+            count_query = text(f"""
+                SELECT COUNT(*) FROM jobs
+                WHERE {where_clause}
+            """)
+            total_result = await db.execute(count_query, params)
+            total = total_result.scalar_one()
+            
+            # Get paginated results
+            params['skip'] = skip
+            params['limit'] = limit
+            jobs_query = text(f"""
+                SELECT 
+                    id,
+                    plugin_version_id,
+                    deployment_id,
+                    status,
+                    triggered_by,
+                    inputs,
+                    outputs,
+                    retry_count,
+                    error_state,
+                    error_message,
+                    created_at,
+                    finished_at
+                FROM jobs
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                OFFSET :skip LIMIT :limit
+            """)
+            
+            result = await db.execute(jobs_query, params)
+            jobs = result.fetchall()
+            
+            return {
+                "jobs": [
+                    {
+                        "id": str(j.id),
+                        "plugin_version_id": str(j.plugin_version_id),
+                        "deployment_id": str(j.deployment_id) if j.deployment_id else "",
+                        "status": j.status,
+                        "triggered_by": j.triggered_by,
+                        "inputs": json.dumps(j.inputs) if isinstance(j.inputs, dict) else str(j.inputs),
+                        "outputs": json.dumps(j.outputs) if j.outputs and isinstance(j.outputs, dict) else "",
+                        "retry_count": j.retry_count,
+                        "error_state": j.error_state or "",
+                        "error_message": j.error_message or "",
+                        "created_at": j.created_at.isoformat() if j.created_at else "",
+                        "finished_at": j.finished_at.isoformat() if j.finished_at else ""
+                    }
+                    for j in jobs
+                ],
+                "total": total,
+                "skip": skip,
+                "limit": limit
+            }
+        except Exception as e:
+            import traceback
+            logger.error(f"Error in list_jobs: {e}")
+            logger.error(traceback.format_exc())
+            raise e
     
     async def get_job_logs(
         self,
@@ -819,11 +1025,47 @@ class PluginService:
         self,
         user_id: str,
         business_unit_id: Optional[str],
-        db: AsyncSession
+        organization_id: Optional[str],
+        db: AsyncSession,
+        token: Optional[str] = None
     ) -> Dict[str, Any]:
-        """List all plugins with access information"""
-        # Get all plugins
-        result = await db.execute(select(Plugin))
+        """List all plugins with access information, filtered by organization"""
+        # Determine if user is super admin to relax restrictions
+        is_admin = False
+        if token:
+            try:
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    user_response = await client.get(
+                        f"http://auth-service:8000/api/v1/users/{user_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=5.0
+                    )
+                    if user_response.status_code == 200:
+                        user_data = user_response.json()
+                        roles = user_data.get("roles", [])
+                        is_admin = any(role.lower() in ["super-admin", "platform-admin"] for role in roles)
+            except Exception as e:
+                pass
+
+        # Build query with organization filter
+        query = select(Plugin)
+        
+        # Filter by organization if provided
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(Plugin.organization_id == org_uuid)
+            except ValueError:
+                # If invalid UUID provided, don't just ignore it, fail closed
+                raise ValueError(f"Invalid organization ID: {organization_id}")
+        else:
+            # If no organization_id provided (e.g. super-admin), ensure we don't accidentally match None if not intended
+            # But for plugin service, None means global/super-admin access
+            pass
+        
+        # Get plugins filtered by organization
+        result = await db.execute(query)
         plugins = result.scalars().all()
         
         # Get all versions for all plugins
@@ -839,10 +1081,6 @@ class PluginService:
             if version.plugin_id not in versions_by_plugin:
                 versions_by_plugin[version.plugin_id] = []
             versions_by_plugin[version.plugin_id].append(version)
-        
-        # TODO: Check if user is admin (would need auth-service call or shared logic)
-        # For now, assume we'll get is_admin flag from caller
-        is_admin = False  # This should be passed as parameter or checked via auth-service
         
         # Get user access for non-admins
         user_access = set()
@@ -865,6 +1103,16 @@ class PluginService:
                         )
                     )
                     user_access = {access.plugin_id for access in access_result.scalars().all()}
+                    
+                    # Check Pending Requests
+                    requests_result = await db.execute(
+                        select(PluginAccessRequest).where(
+                            PluginAccessRequest.user_id == user_uuid,
+                            PluginAccessRequest.business_unit_id == bu_uuid,
+                            PluginAccessRequest.status == "pending"
+                        )
+                    )
+                    pending_requests = {req.plugin_id for req in requests_result.scalars().all()}
                     
                     # Check approved access requests for current business unit only
                     request_result = await db.execute(
@@ -978,12 +1226,27 @@ class PluginService:
         plugin_id: str,
         user_id: str,
         business_unit_id: Optional[str],
+        organization_id: Optional[str],
         db: AsyncSession
     ) -> Dict[str, Any]:
-        """Get plugin details"""
-        result = await db.execute(
-            select(Plugin).where(Plugin.id == plugin_id)
-        )
+        """Get plugin details, filtered by organization"""
+        # Build query with organization filter
+        query = select(Plugin).where(Plugin.id == plugin_id)
+        
+        # Filter by organization if provided
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(Plugin.organization_id == org_uuid)
+            except ValueError:
+                # If invalid UUID provided, don't just ignore it, fail closed
+                raise ValueError(f"Invalid organization ID: {organization_id}")
+        else:
+            # If no organization_id provided (e.g. super-admin), ensure we don't accidentally match None if not intended
+            # But for plugin service, None means global/super-admin access
+            pass
+        
+        result = await db.execute(query)
         plugin = result.scalar_one_or_none()
         
         if not plugin:
@@ -1079,8 +1342,8 @@ class PluginService:
                     f"http://auth-service:8000/api/v1/permissions/check-service",
                     json={
                         "user_id": user_id,
-                        "permission": "platform:plugins:upload",
-                        "resource": "platform"
+                        "permission_slug": "platform:plugins:upload",
+                        "organization_id": ""
                     },
                     timeout=5.0
                 )
@@ -1089,6 +1352,22 @@ class PluginService:
                     is_admin = perm_data.get("has_permission", False)
                 else:
                     is_admin = False
+                
+                # If not global admin, check if organization admin (if plugin belongs to an org)
+                if not is_admin and plugin.organization_id:
+                    perm_response = await client.post(
+                        f"http://auth-service:8000/api/v1/permissions/check-service",
+                        json={
+                            "user_id": user_id,
+                            "permission_slug": "platform:plugins:access:manage",
+                            "organization_id": str(plugin.organization_id)
+                        },
+                        timeout=5.0
+                    )
+                    if perm_response.status_code == 200:
+                         perm_data = perm_response.json()
+                         if perm_data.get("has_permission", False):
+                             is_admin = True
         except Exception as e:
             logger.warning(f"Could not check admin permissions: {e}")
             is_admin = False
@@ -1133,12 +1412,22 @@ class PluginService:
         self,
         plugin_id: str,
         user_id: str,
+        organization_id: Optional[str],
         db: AsyncSession
     ):
-        """Delete a plugin"""
-        # TODO: Check permissions (user must be admin)
+        """Delete a plugin, filtered by organization"""
+        # Build query with organization filter
+        query = select(Plugin).where(Plugin.id == plugin_id)
         
-        result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+        # Filter by organization if provided
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(Plugin.organization_id == org_uuid)
+            except ValueError:
+                raise ValueError(f"Invalid organization ID: {organization_id}")
+        
+        result = await db.execute(query)
         plugin = result.scalar_one_or_none()
         
         if not plugin:
@@ -1249,12 +1538,22 @@ class PluginService:
         self,
         plugin_id: str,
         user_id: str,
+        organization_id: Optional[str],
         db: AsyncSession
     ):
-        """Lock a plugin"""
-        # TODO: Check permissions
+        """Lock a plugin, filtered by organization"""
+        # Build query with organization filter
+        query = select(Plugin).where(Plugin.id == plugin_id)
         
-        result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+        # Filter by organization if provided
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(Plugin.organization_id == org_uuid)
+            except ValueError:
+                raise ValueError(f"Invalid organization ID: {organization_id}")
+        
+        result = await db.execute(query)
         plugin = result.scalar_one_or_none()
         
         if not plugin:
@@ -1277,12 +1576,22 @@ class PluginService:
         self,
         plugin_id: str,
         user_id: str,
+        organization_id: Optional[str],
         db: AsyncSession
     ):
-        """Unlock a plugin"""
-        # TODO: Check permissions
+        """Unlock a plugin, filtered by organization"""
+        # Build query with organization filter
+        query = select(Plugin).where(Plugin.id == plugin_id)
         
-        result = await db.execute(select(Plugin).where(Plugin.id == plugin_id))
+        # Filter by organization if provided
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(Plugin.organization_id == org_uuid)
+            except ValueError:
+                raise ValueError(f"Invalid organization ID: {organization_id}")
+        
+        result = await db.execute(query)
         plugin = result.scalar_one_or_none()
         
         if not plugin:
@@ -1369,7 +1678,9 @@ class PluginService:
         user_id: str,
         business_unit_id: Optional[str],
         note: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None,
+        organization_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Request access to a locked plugin"""
         # Verify plugin exists and is locked
@@ -1384,6 +1695,7 @@ class PluginService:
         
         user_uuid = to_uuid(user_id)
         bu_uuid = to_uuid(business_unit_id)
+        org_uuid = to_uuid(organization_id)
         
         if not user_uuid:
             raise ValueError("Invalid user ID")
@@ -1427,6 +1739,7 @@ class PluginService:
             plugin_id=plugin_id,
             user_id=user_uuid,
             business_unit_id=bu_uuid,
+            organization_id=org_uuid,
             status="pending",
             note=note
         )
@@ -1440,11 +1753,12 @@ class PluginService:
             title="Access Request Submitted",
             message=f"Your access request for plugin '{plugin.name}' has been submitted and is pending approval.",
             notification_type="info",
-            link="/plugin-requests"
+            link="/plugin-requests",
+            token=token
         )
         
         # Send notifications to admins and BU owners
-        notify_user_ids = await get_admins_and_bu_owners(business_unit_id)
+        notify_user_ids = await get_admins_and_bu_owners(business_unit_id, token=token)
         
         # Get user email for the notification message
         user_email = "A user"
@@ -1452,6 +1766,7 @@ class PluginService:
             async with httpx.AsyncClient() as client:
                 user_response = await client.get(
                     f"http://auth-service:8000/api/v1/users/{user_id}",
+                    headers={"Authorization": f"Bearer {token}"} if token else {},
                     timeout=5.0
                 )
                 if user_response.status_code == 200:
@@ -1467,7 +1782,8 @@ class PluginService:
                 title="Plugin Access Request",
                 message=f"{user_email} requested access to locked plugin: {plugin.name}{note_text}",
                 notification_type="info",
-                link="/admin/plugin-requests"
+                link="/admin/plugin-requests",
+                token=token
             )
         
         return {
@@ -1488,7 +1804,9 @@ class PluginService:
         user_id: str,
         granted_by_user_id: str,
         business_unit_id: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None,
+        organization_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Grant access to a plugin"""
         # Verify plugin exists
@@ -1521,6 +1839,7 @@ class PluginService:
         
         # Use business_unit_id from the request if not provided
         bu_uuid = to_uuid(business_unit_id) if business_unit_id else access_request.business_unit_id
+        org_uuid = to_uuid(organization_id) if organization_id else access_request.organization_id
         
         # Update the pending request to approved
         access_request.status = "approved"
@@ -1542,6 +1861,7 @@ class PluginService:
                 plugin_id=plugin_id,
                 user_id=user_uuid,
                 business_unit_id=bu_uuid,
+                organization_id=org_uuid,
                 granted_by=granted_by_uuid
             )
             db.add(plugin_access)
@@ -1564,6 +1884,7 @@ class PluginService:
             "plugin_id": plugin_access.plugin_id,
             "user_id": str(plugin_access.user_id),
             "business_unit_id": str(plugin_access.business_unit_id) if plugin_access.business_unit_id else "",
+            "organization_id": str(plugin_access.organization_id) if plugin_access.organization_id else "",
             "granted_by": str(plugin_access.granted_by),
             "granted_at": plugin_access.granted_at.isoformat() if plugin_access.granted_at else ""
         }
@@ -1573,7 +1894,8 @@ class PluginService:
         plugin_id: str,
         user_id: str,
         rejected_by_user_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ):
         """Reject an access request"""
         # Get plugin info for notification
@@ -1611,7 +1933,8 @@ class PluginService:
             title="Access Request Rejected",
             message=f"Your access request for plugin '{plugin_name}' has been rejected.",
             notification_type="error",
-            link="/plugin-requests"
+            link="/plugin-requests",
+            token=token
         )
     
     async def revoke_plugin_access(
@@ -1619,7 +1942,8 @@ class PluginService:
         plugin_id: str,
         user_id: str,
         revoked_by_user_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ):
         """Revoke plugin access"""
         # Get plugin info for notification
@@ -1694,7 +2018,8 @@ class PluginService:
         plugin_id: str,
         user_id: str,
         restored_by_user_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        token: Optional[str] = None
     ):
         """Restore revoked plugin access"""
         user_uuid = to_uuid(user_id)
@@ -1748,7 +2073,8 @@ class PluginService:
         status: Optional[str],
         search: Optional[str],
         user_id: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        organization_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """List access requests (filtered by user role)"""
         
@@ -1769,14 +2095,29 @@ class PluginService:
                         f"{auth_url}/api/v1/permissions/check-service",
                         json={
                             "user_id": user_id,
-                            "permission": "platform:plugins:upload",
-                            "resource": "platform",
-                            "resource_id": ""
+                            "permission_slug": "platform:plugins:upload",
+                            "organization_id": ""
                         }
                     )
                     if response.status_code == 200:
                         data = response.json()
                         is_admin = data.get("has_permission", False)
+                    
+                    # If not platform admin, check for organization admin if organization_id is provided
+                    if not is_admin and organization_id:
+                         response = await client.post(
+                            f"{auth_url}/api/v1/permissions/check-service",
+                            json={
+                                "user_id": user_id,
+                                "permission_slug": "platform:plugins:access:manage",
+                                "organization_id": organization_id
+                            }
+                        )
+                         if response.status_code == 200:
+                            data = response.json()
+                            # If they have org-level management permission, treat as admin for this list
+                            if data.get("has_permission", False):
+                                is_admin = True
                     
                     # If not admin, check for BU ownership
                     if not is_admin:
@@ -1806,6 +2147,14 @@ class PluginService:
             # Use lowercase string comparison
             query = query.where(PluginAccessRequest.status == status.lower())
         
+        # Filter by organization if provided
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(PluginAccessRequest.organization_id == org_uuid)
+            except ValueError:
+                pass
+        
         # Filter by business unit if user is a BU owner (not admin)
         if not is_admin and bu_ids_owned:
             # Convert string UUIDs to UUID objects
@@ -1834,6 +2183,7 @@ class PluginService:
                 "plugin_id": req.plugin_id,
                 "user_id": str(req.user_id),
                 "business_unit_id": str(req.business_unit_id) if req.business_unit_id else "",
+                "organization_id": str(req.organization_id) if req.organization_id else "",
                 "status": req.status,
                 "note": req.note or "",
                 "requested_at": req.requested_at.isoformat() if req.requested_at else "",
@@ -1884,13 +2234,21 @@ class PluginService:
     async def list_access_grants(
         self,
         plugin_id: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        organization_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """List access grants"""
         query = select(PluginAccess)
         
         if plugin_id:
             query = query.where(PluginAccess.plugin_id == plugin_id)
+            
+        if organization_id:
+            try:
+                org_uuid = uuid.UUID(organization_id)
+                query = query.where(PluginAccess.organization_id == org_uuid)
+            except ValueError:
+                pass
         
         result = await db.execute(query)
         grants = result.scalars().all()
@@ -1901,6 +2259,7 @@ class PluginService:
                 "plugin_id": grant.plugin_id,
                 "user_id": grant.user_id,
                 "business_unit_id": grant.business_unit_id or "",
+                "organization_id": str(grant.organization_id) if grant.organization_id else "",
                 "granted_by": grant.granted_by,
                 "granted_at": grant.granted_at.isoformat() if grant.granted_at else ""
             } for grant in grants],

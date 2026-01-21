@@ -17,6 +17,8 @@ export { notificationsApi } from './notifications';
 export { auditApi } from './audit';
 export { costApi } from './cost';
 export { businessUnitsApi } from './businessUnits';
+export { organizationsApi } from './organizations';
+export { configurationsApi } from './configurations';
 
 // Unified API object for backward compatibility
 import { authApi } from './auth';
@@ -30,6 +32,8 @@ import { notificationsApi } from './notifications';
 import { auditApi } from './audit';
 import { costApi } from './cost';
 import { businessUnitsApi } from './businessUnits';
+import { organizationsApi } from './organizations';
+import { configurationsApi } from './configurations';
 import { apiClient } from './client';
 
 /**
@@ -78,6 +82,8 @@ const api = {
     auditApi,
     costApi,
     businessUnitsApi,
+    organizationsApi,
+    configurationsApi,
     authApi,
     usersApi,
     groupsApi,

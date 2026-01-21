@@ -14,6 +14,7 @@ from app.grpc.business_unit_servicer import BusinessUnitServicer
 from app.grpc.organization_servicer import OrganizationServicer
 from app.grpc.business_unit_group_servicer import BusinessUnitGroupServicer
 from app.grpc.credential_servicer import CredentialServicer
+from app.grpc.configuration_servicer import ConfigurationServicer
 
 # Import generated proto modules
 from proto import auth_pb2_grpc
@@ -53,6 +54,9 @@ async def serve():
     )
     auth_pb2_grpc.add_CredentialServiceServicer_to_server(
         CredentialServicer(), server
+    )
+    auth_pb2_grpc.add_ConfigurationServiceServicer_to_server(
+        ConfigurationServicer(), server
     )
     
     # Listen on port

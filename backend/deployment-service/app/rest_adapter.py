@@ -15,10 +15,13 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 import grpc
 import json
+import uuid
 
 from app.config import settings
 from app.grpc.deployment_servicer import DeploymentServicer
 from app.services.deployment_service import deployment_service
+from app.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import generated proto modules
 try:
@@ -57,8 +60,10 @@ async def global_exception_handler(request, exc):
 # Helper functions for authentication
 def _get_token_from_header(authorization: Optional[str]) -> Optional[str]:
     """Extract token from Authorization header"""
-    if authorization and authorization.startswith("Bearer "):
-        return authorization[7:]
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1]
     return None
 
 
@@ -81,6 +86,7 @@ async def _get_user_info_from_token(token: Optional[str]) -> Optional[Dict]:
                 # Fetch full user details to get is_admin
                 user_response = await client.get(
                     f"http://auth-service:8000/api/v1/users/{user_id}",
+                    headers={"Authorization": f"Bearer {token}"},
                     timeout=5.0
                 )
                 if user_response.status_code == 200:
@@ -89,14 +95,18 @@ async def _get_user_info_from_token(token: Optional[str]) -> Optional[Dict]:
                         "user_id": user_id,
                         "email": user_details.get("email"),
                         "is_admin": user_details.get("is_admin", False),
-                        "active_business_unit_id": user_details.get("active_business_unit_id")
+                        "active_business_unit_id": user_details.get("active_business_unit_id"),
+                        "organization_id": user_details.get("organization_id"),
+                        "token": token
                     }
                 
                 return {
                     "user_id": user_id,
                     "email": data.get("email"),
                     "is_admin": False,
-                    "active_business_unit_id": None
+                    "active_business_unit_id": None,
+                    "organization_id": data.get("organization_id"),
+                    "token": token
                 }
     except Exception as e:
         import logging
@@ -164,26 +174,33 @@ deployment_servicer = DeploymentServicer()
 
 class MockContext:
     """Mock gRPC context for REST adapter"""
-    def __init__(self):
+    def __init__(self, metadata=None):
         self.code = None
         self.details = None
+        self.metadata = metadata or []
     
     def set_code(self, code):
         self.code = code
     
     def set_details(self, details):
         self.details = details
+        
+    def invocation_metadata(self):
+        return self.metadata
 
 
 # ==================== Deployment CRUD Endpoints ====================
 
 @app.post("/api/v1/deployments", status_code=201)
-async def create_deployment(request: CreateDeploymentRequest):
+async def create_deployment(
+    request: CreateDeploymentRequest,
+    user_info: Dict = Depends(verify_token)
+):
     """Create deployment"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     # Convert inputs dict to JSON string for gRPC
     inputs_json = json.dumps(request.inputs) if isinstance(request.inputs, dict) else (request.inputs if isinstance(request.inputs, str) else "{}")
     
@@ -248,100 +265,220 @@ async def list_deployments(
     business_unit_id: Optional[str] = Query(None),
     skip: int = Query(0),
     limit: int = Query(50),
-    user_info: Dict = Depends(verify_token)
+    user_info: Dict = Depends(verify_token),
+    authorization: Optional[str] = Header(None)
 ):
     """List deployments"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    # User info comes from dependency
-    # Regular users can only see their own deployments
-    # Admins can see all (None) or filter by user_id
-    pass
+    # User info is already authenticated via verify_token dependency
+    token = _get_token_from_header(authorization)
     
-    # Regular users can only see their own deployments
-    # Admins can see all (None) or filter by user_id
-    if user_info.get("is_admin"):
-        actual_user_id = user_id
+    # Check if user is super admin FIRST - super admins should NOT see organization-specific resources
+    # BUT Foundry super admins CAN see their own organization's resources
+    is_super_admin = False
+    is_foundry = False
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            user_response = await client.get(
+                f"http://auth-service:8000/api/v1/users/{user_info.get('user_id')}",
+                headers={"Authorization": f"Bearer {token}"} if token else {},
+                timeout=5.0
+            )
+            if user_response.status_code == 200:
+                user_data = user_response.json()
+                roles = user_data.get("roles", [])
+                is_super_admin = any(role.lower() in ["super-admin", "platform-admin"] for role in roles)
+                # Check if user belongs to Foundry organization
+                org_slug = user_data.get("organization", {}).get("slug") if isinstance(user_data.get("organization"), dict) else None
+                if not org_slug:
+                    # Try to get from organization_id
+                    org_id = user_data.get("organization_id")
+                    if org_id:
+                        org_response = await client.get(
+                            f"http://auth-service:8000/api/v1/organizations/{org_id}",
+                            headers={"Authorization": f"Bearer {token}"} if token else {},
+                            timeout=5.0
+                        )
+                        if org_response.status_code == 200:
+                            org_data = org_response.json()
+                            org_slug = org_data.get("slug")
+                is_foundry = org_slug == "foundry"
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to check super admin status: {e}")
+    
+    # SaaS Manager Visibility: Everyone is filtered by their own organization_id
+    # (Checking user_organization_id later in the flow)
+
+
+    
+    # Get organization_id from user_info and filter by organization
+    user_organization_id = user_info.get("organization_id")
+    
+    # If organization_id is not in token, try to fetch it from auth-service
+    if not user_organization_id:
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                user_response = await client.get(
+                    f"http://auth-service:8000/api/v1/users/{user_info.get('user_id')}",
+                    headers={"Authorization": f"Bearer {token}"} if token else {},
+                    timeout=5.0
+                )
+                if user_response.status_code == 200:
+                    user_data = user_response.json()
+                    user_organization_id = user_data.get("organization_id")
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to fetch user organization_id: {e}")
+    
+    # For non-super admins, always filter by organization
+    if user_organization_id:
+        # Organization admin or regular user: filter by organization's business units
+        actual_user_id = user_id if user_info.get("is_admin") else user_info.get("user_id")  # Regular users see only their own
+        # Call service directly to pass organization_id
+        from app.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            result = await deployment_service.list_deployments(
+                search=search,
+                status_filter=status,
+                cloud_provider=cloud_provider,
+                plugin_id=plugin_id,
+                environment=environment,
+                tags_filter=tags,
+                user_id=actual_user_id,
+                business_unit_id=business_unit_id,
+                organization_id=user_organization_id,
+                skip=skip,
+                limit=limit,
+                db=db
+            )
+            
+            # Parse inputs/outputs from JSON strings to objects for frontend
+            items = []
+            for d in result["deployments"]:
+                try:
+                    inputs_obj = json.loads(d["inputs"]) if d.get("inputs") and isinstance(d.get("inputs"), str) else (d.get("inputs") if d.get("inputs") else {})
+                except (json.JSONDecodeError, TypeError):
+                    inputs_obj = {}
+                
+                try:
+                    outputs_obj = json.loads(d["outputs"]) if d.get("outputs") and isinstance(d.get("outputs"), str) else (d.get("outputs") if d.get("outputs") else {})
+                except (json.JSONDecodeError, TypeError):
+                    outputs_obj = {}
+                
+                items.append({
+                    **d,
+                    "inputs": inputs_obj,
+                    "outputs": outputs_obj
+                })
+            
+            return {
+                "deployments": items,
+                "items": items,
+                "total": result["total"],
+                "skip": result["skip"],
+                "limit": result["limit"]
+            }
     else:
-        actual_user_id = user_info.get("user_id")
-    
-    context = MockContext()
-    grpc_request = deployment_pb2.ListDeploymentsRequest(
-        search=search or "",
-        status=status or "",
-        cloud_provider=cloud_provider or "",
-        plugin_id=plugin_id or "",
-        environment=environment or "",
-        tags=tags or "",
-        user_id=actual_user_id or "",
-        business_unit_id=business_unit_id or "",
-        skip=skip,
-        limit=limit
-    )
-    response = await deployment_servicer.ListDeployments(grpc_request, context)
-    
-    if context.code:
-        raise HTTPException(status_code=500, detail=context.details or "Failed to list deployments")
-    
-    # Return format matching monolith: {"items": [...], "total": ..., "skip": ..., "limit": ...}
-    # Parse inputs/outputs from JSON strings to objects for frontend
-    items = []
-    for d in response.deployments:
-        try:
-            inputs_obj = json.loads(d.inputs) if d.inputs and isinstance(d.inputs, str) else (d.inputs if d.inputs else {})
-        except (json.JSONDecodeError, TypeError):
-            inputs_obj = {}
+        # If user doesn't have organization_id, return empty list
+        if not user_organization_id:
+            return {
+                "deployments": [],
+                "items": [],
+                "total": 0,
+                "skip": skip,
+                "limit": limit
+            }
         
-        try:
-            outputs_obj = json.loads(d.outputs) if d.outputs and isinstance(d.outputs, str) else (d.outputs if d.outputs else {})
-        except (json.JSONDecodeError, TypeError):
-            outputs_obj = {}
+        # Super admins only - use gRPC (no organization filtering)
+        # Regular users can only see their own deployments - use gRPC
+        actual_user_id = user_id if user_id else user_info.get("user_id")
         
-        items.append({
-            "id": d.id,
-            "name": d.name,
-            "status": d.status,
-            "deployment_type": d.deployment_type,
-            "environment": d.environment,
-            "plugin_id": d.plugin_id,
-            "version": d.version,
-            "stack_name": d.stack_name or "",
-            "cloud_provider": d.cloud_provider or "",
-            "region": d.region or "",
-            "git_branch": d.git_branch or "",
-            "github_repo_url": d.github_repo_url or "",
-            "github_repo_name": d.github_repo_name or "",
-            "ci_cd_status": d.ci_cd_status or "",
-            "ci_cd_run_id": d.ci_cd_run_id or 0,
-            "ci_cd_run_url": d.ci_cd_run_url or "",
-            "ci_cd_updated_at": d.ci_cd_updated_at or "",
-            "update_status": d.update_status or "",
-            "last_update_job_id": d.last_update_job_id or "",
-            "last_update_error": d.last_update_error or "",
-            "last_update_attempted_at": d.last_update_attempted_at or "",
-            "inputs": inputs_obj,
-            "outputs": outputs_obj,
-            "user_id": d.user_id,
-            "business_unit_id": d.business_unit_id or "",
-            "cost_center": d.cost_center or "",
-            "project_code": d.project_code or "",
-            "created_at": d.created_at,
-            "updated_at": d.updated_at,
-            "tags": [{
-                "id": t.id,
-                "key": t.key,
-                "value": t.value,
-                "created_at": t.created_at
-            } for t in d.tags]
-        })
-    
-    return {
-        "items": items,
-        "total": response.total,
-        "skip": response.skip,
-        "limit": response.limit
-    }
+        context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
+        grpc_request = deployment_pb2.ListDeploymentsRequest(
+            search=search or "",
+            status=status or "",
+            cloud_provider=cloud_provider or "",
+            plugin_id=plugin_id or "",
+            environment=environment or "",
+            tags=tags or "",
+            user_id=actual_user_id or "",
+            business_unit_id=business_unit_id or "",
+            skip=skip,
+            limit=limit
+        )
+        response = await deployment_servicer.ListDeployments(grpc_request, context)
+        
+        if context.code:
+            raise HTTPException(status_code=500, detail=context.details or "Failed to list deployments")
+        
+        # Return format matching monolith: {"items": [...], "total": ..., "skip": ..., "limit": ...}
+        # Parse inputs/outputs from JSON strings to objects for frontend
+        items = []
+        for d in response.deployments:
+            try:
+                inputs_obj = json.loads(d.inputs) if d.inputs and isinstance(d.inputs, str) else (d.inputs if d.inputs else {})
+            except (json.JSONDecodeError, TypeError):
+                inputs_obj = {}
+            
+            try:
+                outputs_obj = json.loads(d.outputs) if d.outputs and isinstance(d.outputs, str) else (d.outputs if d.outputs else {})
+            except (json.JSONDecodeError, TypeError):
+                outputs_obj = {}
+            
+            items.append({
+                "id": d.id,
+                "name": d.name,
+                "status": d.status,
+                "deployment_type": d.deployment_type,
+                "environment": d.environment,
+                "plugin_id": d.plugin_id,
+                "version": d.version,
+                "stack_name": d.stack_name or "",
+                "cloud_provider": d.cloud_provider or "",
+                "region": d.region or "",
+                "git_branch": d.git_branch or "",
+                "github_repo_url": d.github_repo_url or "",
+                "github_repo_name": d.github_repo_name or "",
+                "ci_cd_status": d.ci_cd_status or "",
+                "ci_cd_run_id": d.ci_cd_run_id or 0,
+                "ci_cd_run_url": d.ci_cd_run_url or "",
+                "ci_cd_updated_at": d.ci_cd_updated_at or "",
+                "update_status": d.update_status or "",
+                "last_update_job_id": d.last_update_job_id or "",
+                "last_update_error": d.last_update_error or "",
+                "last_update_attempted_at": d.last_update_attempted_at or "",
+                "inputs": inputs_obj,
+                "outputs": outputs_obj,
+                "user_id": d.user_id,
+                "business_unit_id": d.business_unit_id or "",
+                "cost_center": d.cost_center or "",
+                "project_code": d.project_code or "",
+                "user_email": d.user_email or "",
+                "user_name": d.user_name or "",
+                "created_at": d.created_at,
+                "updated_at": d.updated_at,
+                "tags": [{
+                    "id": t.id,
+                    "key": t.key,
+                    "value": t.value,
+                    "created_at": t.created_at
+                } for t in d.tags]
+            })
+        
+        return {
+            "deployments": items,
+            "items": items,
+            "total": response.total,
+            "skip": response.skip,
+            "limit": response.limit
+        }
 
 
 @app.get("/api/v1/deployments/{deployment_id}")
@@ -349,13 +486,14 @@ async def get_deployment(
     deployment_id: str,
     include_tags: bool = Query(True),
     include_history: bool = Query(False),
-    user_info: Dict = Depends(verify_token)
+    user_info: Dict = Depends(verify_token),
+    authorization: Optional[str] = Header(None)
 ):
     """Get deployment by ID"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetDeploymentRequest(
         deployment_id=deployment_id,
         include_tags=include_tags,
@@ -396,6 +534,8 @@ async def get_deployment(
         "job_id": response.job_id or "",
         "cost_center": response.cost_center or "",
         "project_code": response.project_code or "",
+        "user_email": response.user_email or "",
+        "user_name": response.user_name or "",
         "created_at": response.created_at,
         "updated_at": response.updated_at,
         "tags": [{
@@ -422,7 +562,7 @@ async def update_deployment(
     is_admin = user_info.get("is_admin", False)
 
 
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.UpdateDeploymentRequest(
         deployment_id=deployment_id,
         name=request.name or "",
@@ -465,7 +605,7 @@ async def delete_deployment(
         # But verify_token guarantees user_info is present.
         raise HTTPException(status_code=401, detail="Authentication required (Email missing)")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.DeleteDeploymentRequest(
         deployment_id=deployment_id,
         user_email=user_email
@@ -491,13 +631,14 @@ async def delete_deployment(
 async def get_deployment_history(
     deployment_id: str,
     skip: int = Query(0),
-    limit: int = Query(50)
+    limit: int = Query(50),
+    user_info: Dict = Depends(verify_token)
 ):
     """Get deployment history"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetDeploymentHistoryRequest(
         deployment_id=deployment_id,
         skip=skip,
@@ -519,19 +660,25 @@ async def get_deployment_history(
             "job_id": h.job_id,
             "created_at": h.created_at,
             "created_by": h.created_by,
-            "description": h.description
+            "description": h.description,
+            "user_email": h.user_email or "",
+            "user_name": h.user_name or ""
         } for h in response.history],
         "total": response.total
     }
 
 
 @app.get("/api/v1/deployments/{deployment_id}/history/{version_number}")
-async def get_deployment_history_version(deployment_id: str, version_number: int):
+async def get_deployment_history_version(
+    deployment_id: str,
+    version_number: int,
+    user_info: Dict = Depends(verify_token)
+):
     """Get specific deployment history version"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetDeploymentHistoryVersionRequest(
         deployment_id=deployment_id,
         version_number=version_number
@@ -551,7 +698,9 @@ async def get_deployment_history_version(deployment_id: str, version_number: int
         "job_id": response.job_id,
         "created_at": response.created_at,
         "created_by": response.created_by,
-        "description": response.description
+        "description": response.description,
+        "user_email": response.user_email or "",
+        "user_name": response.user_name or ""
     }
 
 
@@ -602,15 +751,64 @@ async def rollback_deployment(
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
+@app.post("/api/v1/deployments/{deployment_id}/retry")
+async def retry_deployment(
+    deployment_id: str,
+    user_info: Dict = Depends(verify_token)
+):
+    """Retry a failed deployment by creating a new provisioning job"""
+    if not PROTO_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
+    # Extract user info
+    user_id = user_info.get("user_id")
+    user_email = user_info.get("email")
+    
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
+    
+    from app.database import AsyncSessionLocal
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    async with AsyncSessionLocal() as db:
+        try:
+            result = await deployment_service.retry_deployment(
+                deployment_id=deployment_id,
+                user_id=user_id,
+                user_email=user_email,
+                db=db
+            )
+            return result
+        except ValueError as e:
+            logger.warning(f"Retry validation error: {str(e)}")
+            error_msg = str(e).lower()
+            if "not found" in error_msg:
+                raise HTTPException(status_code=404, detail=str(e))
+            else:
+                raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            logger.error(f"Retry runtime error: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            logger.error(f"Retry unexpected error: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
 # ==================== Deployment Tags Endpoints ====================
 
 @app.post("/api/v1/deployments/{deployment_id}/tags")
-async def add_deployment_tag(deployment_id: str, request: AddDeploymentTagRequest):
+async def add_deployment_tag(
+    deployment_id: str,
+    request: AddDeploymentTagRequest,
+    user_info: Dict = Depends(verify_token)
+):
     """Add deployment tag"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.AddDeploymentTagRequest(
         deployment_id=deployment_id,
         key=request.key,
@@ -626,12 +824,16 @@ async def add_deployment_tag(deployment_id: str, request: AddDeploymentTagReques
 
 
 @app.delete("/api/v1/deployments/{deployment_id}/tags/{tag_key}")
-async def remove_deployment_tag(deployment_id: str, tag_key: str):
+async def remove_deployment_tag(
+    deployment_id: str,
+    tag_key: str,
+    user_info: Dict = Depends(verify_token)
+):
     """Remove deployment tag"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.RemoveDeploymentTagRequest(
         deployment_id=deployment_id,
         key=tag_key
@@ -646,12 +848,15 @@ async def remove_deployment_tag(deployment_id: str, tag_key: str):
 
 
 @app.get("/api/v1/deployments/{deployment_id}/tags")
-async def list_deployment_tags(deployment_id: str):
+async def list_deployment_tags(
+    deployment_id: str,
+    user_info: Dict = Depends(verify_token)
+):
     """List deployment tags"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.ListDeploymentTagsRequest(deployment_id=deployment_id)
     response = await deployment_servicer.ListDeploymentTags(grpc_request, context)
     
@@ -672,12 +877,15 @@ async def list_deployment_tags(deployment_id: str):
 # ==================== CI/CD Status Endpoints ====================
 
 @app.get("/api/v1/deployments/{deployment_id}/ci-cd-status")
-async def get_cicd_status(deployment_id: str):
+async def get_cicd_status(
+    deployment_id: str,
+    user_info: Dict = Depends(verify_token)
+):
     """Get CI/CD status"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetCICDStatusRequest(deployment_id=deployment_id)
     response = await deployment_servicer.GetCICDStatus(grpc_request, context)
     
@@ -694,12 +902,16 @@ async def get_cicd_status(deployment_id: str):
 
 
 @app.put("/api/v1/deployments/{deployment_id}/ci-cd-status")
-async def update_cicd_status(deployment_id: str, request: UpdateCICDStatusRequest):
+async def update_cicd_status(
+    deployment_id: str,
+    request: UpdateCICDStatusRequest,
+    user_info: Dict = Depends(verify_token)
+):
     """Update CI/CD status"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.UpdateCICDStatusRequest(
         deployment_id=deployment_id,
         ci_cd_status=request.ci_cd_status,
@@ -734,13 +946,14 @@ async def list_environments():
 @app.get("/api/v1/deployments/stats/by-environment")
 async def deployment_stats_by_environment(
     user_id: Optional[str] = Query(None),
-    business_unit_id: Optional[str] = Query(None)
+    business_unit_id: Optional[str] = Query(None),
+    user_info: Dict = Depends(verify_token)
 ):
     """Get deployment counts grouped by environment"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetDeploymentStatsRequest(
         user_id=user_id or "",
         business_unit_id=business_unit_id or ""
@@ -776,27 +989,29 @@ async def tag_usage_stats(
 @app.post("/api/v1/deployments/costs/estimate/pre-provision")
 async def estimate_cost_pre_provision(
     plugin_id: str = Query(...),
-    inputs: Dict = Body(...)
+    inputs: Dict = Body(...),
+    db: AsyncSession = Depends(get_db)
 ):
-    """Estimate cost before provisioning (placeholder)"""
-    # This would need integration with cost estimation services
-    # For now, return placeholder
-    return {
-        "estimated_monthly_cost": 0.0,
-        "currency": "USD",
-        "period": "month",
-        "breakdown": {},
-        "note": "Cost estimation not yet implemented in deployment-service"
-    }
+    """Estimate cost before provisioning based on plugin and inputs"""
+    result = await deployment_service.estimate_pre_provision_cost(
+        plugin_id=plugin_id,
+        inputs=inputs,
+        db=db
+    )
+    return result
+
 
 
 @app.get("/api/v1/deployments/costs/estimate/{deployment_id}")
-async def get_cost_estimate(deployment_id: str):
+async def get_cost_estimate(
+    deployment_id: str,
+    user_info: Dict = Depends(verify_token)
+):
     """Get cost estimate for a deployment"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetDeploymentCostsRequest(deployment_id=deployment_id)
     response = await deployment_servicer.GetDeploymentCosts(grpc_request, context)
     
@@ -844,50 +1059,35 @@ async def get_actual_costs(
 @app.get("/api/v1/deployments/costs/trend")
 async def get_cost_trend(
     months: int = Query(6),
-    business_unit_id: Optional[str] = Query(None)
+    user_info: Dict = Depends(verify_token),
+    db: AsyncSession = Depends(get_db)
 ):
-    """Get monthly cost trend (placeholder)"""
-    return {
-        "trend": [],
-        "total": 0.0,
-        "currency": "USD"
-    }
+    """Get monthly cost trend"""
+    organization_id = user_info.get("organization_id")
+    result = await deployment_service.get_cost_trend(
+        months=months,
+        organization_id=organization_id,
+        db=db
+    )
+    return result
+
 
 
 @app.get("/api/v1/deployments/costs/by-provider")
 async def get_costs_by_provider(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
-    business_unit_id: Optional[str] = Query(None)
+    user_info: Dict = Depends(verify_token),
+    db: AsyncSession = Depends(get_db)
 ):
     """Get costs grouped by cloud provider"""
-    if not PROTO_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Service not ready")
-    
-    context = MockContext()
-    grpc_request = deployment_pb2.GetDeploymentCostsRequest(
-        business_unit_id=business_unit_id or "",
-        start_date=start_date or "",
-        end_date=end_date or ""
+    organization_id = user_info.get("organization_id")
+    result = await deployment_service.get_costs_by_provider(
+        organization_id=organization_id,
+        db=db
     )
-    response = await deployment_servicer.GetDeploymentCosts(grpc_request, context)
-    
-    if context.code:
-        raise HTTPException(status_code=500, detail=context.details or "Failed to get costs")
-    
-    # Group by provider (would need enhancement)
-    return {
-        "costs": [
-            {
-                "provider": "unknown",
-                "amount": float(response.total_cost),
-                "currency": response.currency,
-                "deployment_count": len(response.costs)
-            }
-        ],
-        "total": float(response.total_cost),
-        "currency": response.currency
-    }
+    return result
+
 
 
 @app.get("/api/v1/deployments/costs/aggregate")
@@ -896,13 +1096,14 @@ async def get_aggregate_costs(
     end_date: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
     environment: Optional[str] = Query(None),
-    business_unit_id: Optional[str] = Query(None)
+    business_unit_id: Optional[str] = Query(None),
+    user_info: Dict = Depends(verify_token)
 ):
     """Get aggregated costs with optional filters"""
     if not PROTO_AVAILABLE:
         raise HTTPException(status_code=503, detail="Service not ready")
     
-    context = MockContext()
+    context = MockContext(metadata=[('authorization', f"Bearer {user_info['token']}")]) if user_info.get("token") else MockContext()
     grpc_request = deployment_pb2.GetDeploymentCostsRequest(
         business_unit_id=business_unit_id or "",
         start_date=start_date or "",

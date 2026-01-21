@@ -39,6 +39,7 @@ message ProvisionInfrastructureRequest {
 
 message DestroyInfrastructureRequest {
   string deployment_id = 1;
+  string job_id = 2;
 }
 
 // Microservice Provisioning
@@ -53,6 +54,7 @@ message ProvisionMicroserviceRequest {
 
 message DestroyMicroserviceRequest {
   string deployment_id = 1;
+  string job_id = 2;
 }
 
 // Task Responses
