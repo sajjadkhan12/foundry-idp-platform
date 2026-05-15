@@ -70,7 +70,14 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)  # UUID
     plugin_version_id: Mapped[int] = mapped_column(ForeignKey("plugin_versions.id"), nullable=False)
     deployment_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("deployments.id"), nullable=True)
-    status: Mapped[JobStatus] = mapped_column(SQLEnum(JobStatus), default=JobStatus.PENDING)
+    status: Mapped[JobStatus] = mapped_column(
+        SQLEnum(
+            JobStatus,
+            name="job_status_enum",
+            values_callable=lambda enum: [member.value for member in enum]
+        ),
+        default=JobStatus.PENDING
+    )
     triggered_by: Mapped[str] = mapped_column(String, nullable=False)  # User ID or email
     inputs: Mapped[dict] = mapped_column(JSON, default={})
     outputs: Mapped[Optional[dict]] = mapped_column(JSON)
